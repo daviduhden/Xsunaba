@@ -1,7 +1,7 @@
 #!/bin/ksh
 
 #
-# Xsunaba - X11 application sandbox
+# Xsunaba - Tool for sandboxing X11 applications
 #
 # Originally based on http://blog.sleeplessbeastie.eu/2013/07/19/how-to-create-browser-sandbox/
 #
