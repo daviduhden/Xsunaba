@@ -83,6 +83,10 @@ find_unused_display() {
 start_xephyr() {
   if [ "$VERBOSE" = true ]; then echo "Starting Xephyr on display ${XSUNABA_DISPLAY}..."; fi
   xauth -f ${XSUNABA_XAUTH} add ${XSUNABA_DISPLAY} . ${XSUNABA_MCOOKIE}
+  if [ $? -ne 0 ]; then
+    echo "Failed to add authentication cookie to xauth."
+    exit 1
+  fi
   Xephyr -auth ${XSUNABA_XAUTH} -screen ${WIDTH}x${HEIGHT} -br -nolisten tcp $XSUNABA_DISPLAY &
   XSUNABA_XEPHYR_PID=$!
   sleep 1
@@ -125,7 +129,15 @@ stop_xephyr() {
 clear_authentication_cookie() {
   if [ "$VERBOSE" = true ]; then echo "Clearing authentication cookie for display ${XSUNABA_DISPLAY}..."; fi
   xauth -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY
+  if [ $? -ne 0 ]; then
+    echo "Failed to remove authentication cookie from xauth."
+    exit 1
+  fi
   doas -u $XSUNABA_USER xauth remove $XSUNABA_DISPLAY
+  if [ $? -ne 0 ]; then
+    echo "Failed to remove authentication cookie for $XSUNABA_USER."
+    exit 1
+  fi
   if [ "$VERBOSE" = true ]; then echo "Authentication cookie cleared"; fi
 }
 
