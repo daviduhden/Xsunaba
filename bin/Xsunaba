@@ -57,7 +57,7 @@ APPLICATION="$@"
 
 # Function to adjust window dimensions to occupy the full window
 adjust_window_dimensions() {
-  if $VERBOSE; then echo "Checking for window geometry hacks for '$(basename "$1")'..."; fi
+  if [ "$VERBOSE" = true ]; then echo "Checking for window geometry hacks for '$(basename "$1")'..."; fi
   case "$(basename "$1")" in
     "chrome")
       APPLICATION="${APPLICATION} -window-size=${WIDTH},${HEIGHT} --window-position=0,0"
@@ -76,7 +76,7 @@ find_unused_display() {
       break
     fi
   done
-  if $VERBOSE; then echo "Using display ${XSUNABA_DISPLAY#:}"; fi
+  if [ "$VERBOSE" = true ]; then echo "Using display ${XSUNABA_DISPLAY#:}"; fi
 }
 
 # Function to start Xephyr
@@ -93,7 +93,7 @@ start_xephyr() {
 
 # Function to launch the application as the sandbox user
 launch_application() {
-  if $VERBOSE; then echo "Launching '${APPLICATION}' on display ${XSUNABA_DISPLAY}..."; fi
+  if [ "$VERBOSE" = "true" ]; then echo "Launching '${APPLICATION}' on display ${XSUNABA_DISPLAY}..."; fi
   doas -u $XSUNABA_USER env DISPLAY=$XSUNABA_DISPLAY $APPLICATION
   if [ $? -ne 0 ]; then
     echo "Failed to run the application as $XSUNABA_USER"
@@ -106,7 +106,7 @@ launch_application() {
 
 # Function to stop Xephyr
 stop_xephyr() {
-  if ps -p $XSUNABA_XEPHYR_PID >/dev/null; then
+  if ps -p $XSUNABA_XEPHYR_PID &>/dev/null; then
     kill $XSUNABA_XEPHYR_PID
     sleep 1
     if ps -p $XSUNABA_XEPHYR_PID >/dev/null; then
