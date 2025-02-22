@@ -81,6 +81,7 @@ find_unused_display() {
 
 # Function to start Xephyr
 start_xephyr() {
+  if [ "$VERBOSE" = true ]; then echo "Starting Xephyr on display ${XSUNABA_DISPLAY}..."; fi
   xauth -f ${XSUNABA_XAUTH} add ${XSUNABA_DISPLAY} . ${XSUNABA_MCOOKIE}
   Xephyr -auth ${XSUNABA_XAUTH} -screen ${WIDTH}x${HEIGHT} -br -nolisten tcp $XSUNABA_DISPLAY &
   XSUNABA_XEPHYR_PID=$!
@@ -89,6 +90,7 @@ start_xephyr() {
     echo "Failed to start Xephyr. Exiting."
     exit 1
   fi
+  if [ "$VERBOSE" = true ]; then echo "Xephyr started with PID ${XSUNABA_XEPHYR_PID}"; fi
 }
 
 # Function to launch the application as the sandbox user
@@ -102,10 +104,12 @@ launch_application() {
     doas -u $XSUNABA_USER xauth remove $XSUNABA_DISPLAY
     exit 1
   fi
+  if [ "$VERBOSE" = true ]; then echo "Application '${APPLICATION}' launched successfully"; fi
 }
 
 # Function to stop Xephyr
 stop_xephyr() {
+  if [ "$VERBOSE" = true ]; then echo "Stopping Xephyr with PID ${XSUNABA_XEPHYR_PID}..."; fi
   if ps -p $XSUNABA_XEPHYR_PID &>/dev/null; then
     kill $XSUNABA_XEPHYR_PID
     sleep 1
@@ -114,12 +118,15 @@ stop_xephyr() {
       exit 1
     fi
   fi
+  if [ "$VERBOSE" = true ]; then echo "Xephyr stopped successfully"; fi
 }
 
 # Function to clear authentication cookie after session is closed
 clear_authentication_cookie() {
+  if [ "$VERBOSE" = true ]; then echo "Clearing authentication cookie for display ${XSUNABA_DISPLAY}..."; fi
   xauth -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY
   doas -u $XSUNABA_USER xauth remove $XSUNABA_DISPLAY
+  if [ "$VERBOSE" = true ]; then echo "Authentication cookie cleared"; fi
 }
 
 # Main script execution
