@@ -15,7 +15,7 @@ For those using Xsunaba under OpenBSD, some X11 applications in ports utilize th
 
 ## PREREQUISITES
 
-* OpenBSD
+* [OpenBSD](https://www.openbsd.org/faq/faq4.html#Download)
 * X11 (preferably running [xenodm(1)](https://man.openbsd.org/xenodm))
 * [doas(1)](https://man.openbsd.org/doas)
 * [Xephyr(1)](https://man.openbsd.org/Xephyr)
