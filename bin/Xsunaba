@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/ksh
 
 #
 # Xsunaba - X11 application sandbox
@@ -7,6 +7,7 @@
 #
 # MIT License
 #
+# Copyright (c) 2025 David Uhden Collado
 # Copyright (c) 2020 Morgan Aldridge
 # Copyright (c) 2013 Milosz Galazka
 #
@@ -29,62 +30,103 @@
 # SOFTWARE.
 #
 
+# Enable verbose output if VERBOSE is set to true
 VERBOSE="${VERBOSE:=false}"
 
-# display used to show browser
+# Display used to show the application
 XSUNABA_DISPLAY="${XSUNABA_DISPLAY:=:32}"
 
-# sandbox user
+# Sandbox user
 XSUNABA_USER="${XSUNABA_USER:=xsunaba}"
 
-# authentication cookie
-XSUNABA_MCOOKIE=`openssl rand -hex 16`
+# Authentication cookie
+XSUNABA_MCOOKIE=$(openssl rand -hex 16)
 
-# authentication file
+# Authentication file
 XSUNABA_XAUTH="$HOME/.Xauthority-xsunaba"
 
-# local X11 sockets, used to determine if application is running
+# Local X11 sockets, used to determine if the application is running
 LOCAL_SOCKETS="/tmp/.X11-unix"
 
-# window width and height
+# Window width and height
 WIDTH="${WIDTH:=1024}"
 HEIGHT="${HEIGHT:=768}"
 
-# application to start
-# width and height are raised above window dimensions to occupy full window
-APPLICATION="$@" # -geometry $(expr $WIDTH + 1)x$(expr $HEIGHT + 1)"
-if $VERBOSE; then echo "Checking for window geometry hacks for '$(basename "$1")'..."; fi
-case "$(basename "$1")" in
-  "chrome")
-    APPLICATION="${APPLICATION} -window-size=${WIDTH},${HEIGHT} --window-position=0,0"
-    ;;
-  "firefox")
-    APPLICATION="${APPLICATION} -width ${WIDTH} -height ${HEIGHT}"
-    ;;
-esac
+# Application to start
+APPLICATION="$@"
 
-# find an unused display for Xephyr
-while [ -e ${LOCAL_SOCKETS}/X${XSUNABA_DISPLAY#:} ]; do
-  if $VERBOSE; then echo "Display ${XSUNABA_DISPLAY#:} is in use. Looking for an unused display..."; fi
-  XSUNABA_DISPLAY=":$(expr ${XSUNABA_DISPLAY#:} + 1)"
-done
+# Function to adjust window dimensions to occupy the full window
+adjust_window_dimensions() {
+  if $VERBOSE; then echo "Checking for window geometry hacks for '$(basename "$1")'..."; fi
+  case "$(basename "$1")" in
+    "chrome")
+      APPLICATION="${APPLICATION} -window-size=${WIDTH},${HEIGHT} --window-position=0,0"
+      ;;
+    "firefox")
+      APPLICATION="${APPLICATION} -width ${WIDTH} -height ${HEIGHT}"
+      ;;
+  esac
+}
 
-# store authentication cookie for chosen display
-xauth -f ${XSUNABA_XAUTH} add ${XSUNABA_DISPLAY} . ${XSUNABA_MCOOKIE}
-doas -u $XSUNABA_USER xauth add ${XSUNABA_DISPLAY} . ${XSUNABA_MCOOKIE}
+# Function to find an unused display for Xephyr
+find_unused_display() {
+  for i in $(seq 32 99); do
+    if [ ! -e ${LOCAL_SOCKETS}/X${i} ]; then
+      XSUNABA_DISPLAY=":${i}"
+      break
+    fi
+  done
+  if $VERBOSE; then echo "Using display ${XSUNABA_DISPLAY#:}"; fi
+}
 
-# start Xephyr and application
-Xephyr -auth ${XSUNABA_XAUTH} -screen ${WIDTH}x${HEIGHT} -br -nolisten tcp $XSUNABA_DISPLAY &
-XSUNABA_XEPHYR_PID=$!
-sleep 1
-if $VERBOSE; then echo "Launching '${APPLICATION}' on display ${XSUNABA_DISPLAY}..."; fi
-doas -u $XSUNABA_USER env DISPLAY=$XSUNABA_DISPLAY $APPLICATION
+# Function to start Xephyr
+start_xephyr() {
+  xauth -f ${XSUNABA_XAUTH} add ${XSUNABA_DISPLAY} . ${XSUNABA_MCOOKIE}
+  Xephyr -auth ${XSUNABA_XAUTH} -screen ${WIDTH}x${HEIGHT} -br -nolisten tcp $XSUNABA_DISPLAY &
+  XSUNABA_XEPHYR_PID=$!
+  sleep 1
 
-# stop Xephyr
-if ps -p $XSUNABA_XEPHYR_PID >/dev/null; then
-  kill $XSUNABA_XEPHYR_PID
-fi
+  if ! ps -p $XSUNABA_XEPHYR_PID > /dev/null; then
+    echo "Failed to start Xephyr. Exiting."
+    exit 1
+  fi
+}
 
-# clear authentication cookie after session is closed
-xauth -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY
-doas -u $XSUNABA_USER xauth remove $XSUNABA_DISPLAY
+# Function to launch the application as the sandbox user
+launch_application() {
+  if $VERBOSE; then echo "Launching '${APPLICATION}' on display ${XSUNABA_DISPLAY}..."; fi
+  doas -u $XSUNABA_USER env DISPLAY=$XSUNABA_DISPLAY $APPLICATION
+  if [ $? -ne 0 ]; then
+    echo "Failed to run the application as $XSUNABA_USER"
+    kill $XSUNABA_XEPHYR_PID
+    xauth -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY
+    doas -u $XSUNABA_USER xauth remove $XSUNABA_DISPLAY
+    exit 1
+  fi
+}
+
+# Function to stop Xephyr
+stop_xephyr() {
+  if ps -p $XSUNABA_XEPHYR_PID >/dev/null; then
+    kill $XSUNABA_XEPHYR_PID
+    sleep 1
+    if ps -p $XSUNABA_XEPHYR_PID >/dev/null; then
+      echo "Failed to stop Xephyr. Exiting."
+      exit 1
+    fi
+  fi
+}
+
+# Function to clear authentication cookie after session is closed
+clear_authentication_cookie() {
+  xauth -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY
+  doas -u $XSUNABA_USER xauth remove $XSUNABA_DISPLAY
+}
+
+# Main script execution
+adjust_window_dimensions "$@"
+find_unused_display
+start_xephyr
+launch_application
+stop_xephyr
+clear_authentication_cookie
