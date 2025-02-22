@@ -11,7 +11,7 @@ _IMPORTANT:_ This _does not_ guarantee access is prevented outside the sandbox u
 
 This is based on [a script by Milosz Galazka](https://blog.sleeplessbeastie.eu/2013/07/19/how-to-create-browser-sandbox/) (see [Internet Archive's Wayback Machine archive](https://web.archive.org/web/20210115000000*/https://blog.sleeplessbeastie.eu/2013/07/19/how-to-create-browser-sandbox/)) and ported to [OpenBSD](http://www.openbsd.org/).
 
-For those using Xsunaba under OpenBSD, some X11 applications in ports utilize the [pledge(2)](https://man.openbsd.org/pledge) & [unveil(2)](https://man.openbsd.org/unveil) functions to further restrict access to the filesystem.
+For those using Xsunaba under OpenBSD, some X11 applications in ports tree utilize the [pledge(2)](https://man.openbsd.org/pledge) & [unveil(2)](https://man.openbsd.org/unveil) functions to further restrict access to the filesystem.
 
 ## PREREQUISITES
 
