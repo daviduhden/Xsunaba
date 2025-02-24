@@ -89,7 +89,7 @@ start_xephyr() {
   fi
   Xephyr -auth ${XSUNABA_XAUTH} -screen ${WIDTH}x${HEIGHT} -br -nolisten tcp $XSUNABA_DISPLAY &
   XSUNABA_XEPHYR_PID=$!
-  sleep 1
+  sleep 3
   if ! ps -p $XSUNABA_XEPHYR_PID > /dev/null; then
     echo "Failed to start Xephyr. Exiting."
     exit 1
