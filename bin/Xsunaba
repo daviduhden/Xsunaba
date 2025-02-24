@@ -100,6 +100,14 @@ start_xephyr() {
 # Function to launch the application as the sandbox user
 launch_application() {
   if [ "$VERBOSE" = "true" ]; then echo "Launching '${APPLICATION}' on display ${XSUNABA_DISPLAY}..."; fi
+  doas -u $XSUNABA_USER touch /home/$XSUNABA_USER/.Xauthority
+  doas -u $XSUNABA_USER xauth add $XSUNABA_DISPLAY . $XSUNABA_MCOOKIE
+  if [ $? -ne 0 ]; then
+    echo "Failed to add authentication cookie for $XSUNABA_USER."
+    kill $XSUNABA_XEPHYR_PID
+    xauth -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY
+    exit 1
+  fi
   doas -u $XSUNABA_USER env DISPLAY=$XSUNABA_DISPLAY $APPLICATION
   if [ $? -ne 0 ]; then
     echo "Failed to run the application as $XSUNABA_USER"
