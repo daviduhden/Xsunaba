@@ -57,7 +57,7 @@ APPLICATION="$@"
 
 # Function to adjust window dimensions to occupy the full window
 adjust_window_dimensions() {
-  if [ "$VERBOSE" = true ]; then echo "Checking for window geometry hacks for '$(basename "$1")'..."; fi
+  if [ "$VERBOSE" = true ]; then print "Checking for window geometry hacks for '$(basename "$1")'..."; fi
   case "$(basename "$1")" in
     "chrome")
       APPLICATION="${APPLICATION} -window-size=${WIDTH},${HEIGHT} --window-position=0,0"
@@ -76,77 +76,77 @@ find_unused_display() {
       break
     fi
   done
-  if [ "$VERBOSE" = true ]; then echo "Using display ${XSUNABA_DISPLAY#:}"; fi
+  if [ "$VERBOSE" = true ]; then print "Using display ${XSUNABA_DISPLAY#:}"; fi
 }
 
 # Function to start Xephyr
 start_xephyr() {
-  if [ "$VERBOSE" = true ]; then echo "Starting Xephyr on display ${XSUNABA_DISPLAY}..."; fi
+  if [ "$VERBOSE" = true ]; then print "Starting Xephyr on display ${XSUNABA_DISPLAY}..."; fi
   xauth -f ${XSUNABA_XAUTH} add ${XSUNABA_DISPLAY} . ${XSUNABA_MCOOKIE}
   if [ $? -ne 0 ]; then
-    echo "Failed to add authentication cookie to xauth."
+    print "Failed to add authentication cookie to xauth."
     exit 1
   fi
   Xephyr -auth ${XSUNABA_XAUTH} -screen ${WIDTH}x${HEIGHT} -br -nolisten tcp $XSUNABA_DISPLAY &
   XSUNABA_XEPHYR_PID=$!
   sleep 3
   if ! ps -p $XSUNABA_XEPHYR_PID > /dev/null; then
-    echo "Failed to start Xephyr. Exiting."
+    print "Failed to start Xephyr. Exiting."
     exit 1
   fi
-  if [ "$VERBOSE" = true ]; then echo "Xephyr started with PID ${XSUNABA_XEPHYR_PID}"; fi
+  if [ "$VERBOSE" = true ]; then print "Xephyr started with PID ${XSUNABA_XEPHYR_PID}"; fi
 }
 
 # Function to launch the application as the sandbox user
 launch_application() {
-  if [ "$VERBOSE" = "true" ]; then echo "Launching '${APPLICATION}' on display ${XSUNABA_DISPLAY}..."; fi
+  if [ "$VERBOSE" = "true" ]; then print "Launching '${APPLICATION}' on display ${XSUNABA_DISPLAY}..."; fi
   doas -u $XSUNABA_USER touch /home/$XSUNABA_USER/.Xauthority
   doas -u $XSUNABA_USER xauth add $XSUNABA_DISPLAY . $XSUNABA_MCOOKIE
   if [ $? -ne 0 ]; then
-    echo "Failed to add authentication cookie for $XSUNABA_USER."
+    print "Failed to add authentication cookie for $XSUNABA_USER."
     kill $XSUNABA_XEPHYR_PID
     xauth -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY
     exit 1
   fi
   doas -u $XSUNABA_USER env DISPLAY=$XSUNABA_DISPLAY $APPLICATION
   if [ $? -ne 0 ]; then
-    echo "Failed to run the application as $XSUNABA_USER"
+    print "Failed to run the application as $XSUNABA_USER"
     kill $XSUNABA_XEPHYR_PID
     xauth -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY
     doas -u $XSUNABA_USER xauth remove $XSUNABA_DISPLAY
     exit 1
   fi
-  if [ "$VERBOSE" = true ]; then echo "Application '${APPLICATION}' launched successfully"; fi
+  if [ "$VERBOSE" = true ]; then print "Application '${APPLICATION}' launched successfully"; fi
 }
 
 # Function to stop Xephyr
 stop_xephyr() {
-  if [ "$VERBOSE" = true ]; then echo "Stopping Xephyr with PID ${XSUNABA_XEPHYR_PID}..."; fi
+  if [ "$VERBOSE" = true ]; then print "Stopping Xephyr with PID ${XSUNABA_XEPHYR_PID}..."; fi
   if ps -p $XSUNABA_XEPHYR_PID &>/dev/null; then
     kill $XSUNABA_XEPHYR_PID
     sleep 1
     if ps -p $XSUNABA_XEPHYR_PID >/dev/null; then
-      echo "Failed to stop Xephyr. Exiting."
+      print "Failed to stop Xephyr. Exiting."
       exit 1
     fi
   fi
-  if [ "$VERBOSE" = true ]; then echo "Xephyr stopped successfully"; fi
+  if [ "$VERBOSE" = true ]; then print "Xephyr stopped successfully"; fi
 }
 
 # Function to clear authentication cookie after session is closed
 clear_authentication_cookie() {
-  if [ "$VERBOSE" = true ]; then echo "Clearing authentication cookie for display ${XSUNABA_DISPLAY}..."; fi
+  if [ "$VERBOSE" = true ]; then print "Clearing authentication cookie for display ${XSUNABA_DISPLAY}..."; fi
   xauth -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY
   if [ $? -ne 0 ]; then
-    echo "Failed to remove authentication cookie from xauth."
+    print "Failed to remove authentication cookie from xauth."
     exit 1
   fi
   doas -u $XSUNABA_USER xauth remove $XSUNABA_DISPLAY
   if [ $? -ne 0 ]; then
-    echo "Failed to remove authentication cookie for $XSUNABA_USER."
+    print "Failed to remove authentication cookie for $XSUNABA_USER."
     exit 1
   fi
-  if [ "$VERBOSE" = true ]; then echo "Authentication cookie cleared"; fi
+  if [ "$VERBOSE" = true ]; then print "Authentication cookie cleared"; fi
 }
 
 # Main script execution
