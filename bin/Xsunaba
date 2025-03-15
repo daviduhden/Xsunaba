@@ -186,15 +186,19 @@ sub clear_authentication_cookie {
 }
 
 # Main script execution
-if (@ARGV) {
-    adjust_window_dimensions($ARGV[0]);
-} else {
-    print "No application specified. Exiting.\n";
-    exit 1;
+sub main {
+    if (@ARGV) {
+        adjust_window_dimensions($ARGV[0]);
+    } else {
+        print "No application specified. Exiting.\n";
+        exit 1;
+    }
+
+    find_unused_display();
+    start_xephyr();
+    launch_application();
+    stop_xephyr();
+    clear_authentication_cookie();
 }
 
-find_unused_display();
-start_xephyr();
-launch_application();
-stop_xephyr();
-clear_authentication_cookie();
+main();
