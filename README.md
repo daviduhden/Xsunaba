@@ -1,6 +1,6 @@
 # Xsunaba
 
-## OVERVIEW
+## Overview
 
 Xsunaba is a utility to run X11 (or just X) applications in a rudimentary sandbox ('sunaba' from Japanese) to limit access to your files and X11 events (especially keyboard input). The 'sandbox' consists of:
 
@@ -13,7 +13,7 @@ This is based on [a script by Milosz Galazka](https://blog.sleeplessbeastie.eu/2
 
 For those using Xsunaba under OpenBSD, some X11 applications in ports tree utilize the [pledge(2)](https://man.openbsd.org/pledge) & [unveil(2)](https://man.openbsd.org/unveil) functions to further restrict access to the filesystem.
 
-## PREREQUISITES
+## Prerequisites
 
 * [OpenBSD](https://www.openbsd.org/faq/faq4.html#Download)
 * X11 (preferably running [xenodm(1)](https://man.openbsd.org/xenodm))
@@ -22,25 +22,30 @@ For those using Xsunaba under OpenBSD, some X11 applications in ports tree utili
 * [xauth(1)](https://man.openbsd.org/xauth)
 * [openssl(1)](https://man.openbsd.org/openssl)
 
-## USAGE
+## Usage
 
 1. Add an `xsunaba` user:
 
-        doas useradd -m xsunaba
+    ```sh
+    doas useradd -m xsunaba
+    ```
 
 2. Add an entry to your `/etc/doas.conf` allowing your user passwordless access to the `xsunaba` user (replacing `<USER>` with your username):
 
-        permit nopass <USER> as xsunaba
+    ```sh
+    permit nopass <USER> as xsunaba
+    ```
 
 3. Prefix your X11 application command with `Xsunaba`, for example:
 
-        Xsunaba chrome --incognito &
-
-        Xsunaba firefox --private-window &
+    ```sh
+    Xsunaba chrome --incognito &
+    Xsunaba firefox --private-window &
+    ```
 
 _Note:_ `Xsunaba` will automatically apply window geometry hacks to fit to the `Xephyr` display for the following X11 applications: `chrome`, and `firefox`.
 
-### ADVANCED USAGE
+### Advanced Usage
 
 The following environment variables may be set to change `Xsunaba`'s behavior:
 
@@ -56,6 +61,6 @@ If you want to share some files between your user and the `xsunaba` user, it is 
 
 *IMPORTANT:* This will weaken the security of your sandbox!
 
-## LICENSE
+## License
 
 Released under the [MIT License](LICENSE) by permission.
