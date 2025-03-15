@@ -54,6 +54,7 @@ The following environment variables may be set to change `Xsunaba`'s behavior:
 * `XSUNABA_USER`: Set a username to run X11 applications as. Default: `xsunaba`.
 * `WIDTH`: Set a custom `Xephyr` display width in pixels. Default: `1024`.
 * `HEIGHT`: Set a custom `Xephyr` display height in pixels. Default: `768`.
+* `XSUNABA_XEPHYR_PID`: Set the PID of the Xephyr process. Default: None.
 
 ### Shared Files
 
