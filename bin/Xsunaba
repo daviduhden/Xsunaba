@@ -44,8 +44,13 @@ my $WIDTH           = $ENV{WIDTH}  // 1024;
 my $HEIGHT          = $ENV{HEIGHT} // 768;
 my $APPLICATION     = join(" ", @ARGV);
 
+my $OPENSSL = '/usr/bin/openssl';
+my $XAUTH = '/usr/X11R6/bin/xauth';
+my $DOAS = '/usr/bin/doas';
+my $XEPHYR = '/usr/X11R6/bin/Xephyr';
+
 # Generate authentication cookie using openssl
-my $XSUNABA_MCOOKIE = `openssl rand -hex 16`;
+my $XSUNABA_MCOOKIE = `$OPENSSL rand -hex 16`;
 chomp($XSUNABA_MCOOKIE);
 
 # Global variable for Xephyr's PID
@@ -85,14 +90,14 @@ sub start_xephyr {
     if ($VERBOSE eq 'true') {
         print "Starting Xephyr on display $XSUNABA_DISPLAY...\n";
     }
-    my $xauth_cmd = "xauth -f $XSUNABA_XAUTH add $XSUNABA_DISPLAY . $XSUNABA_MCOOKIE";
+    my $xauth_cmd = "$XAUTH -f $XSUNABA_XAUTH add $XSUNABA_DISPLAY . $XSUNABA_MCOOKIE";
     system($xauth_cmd) == 0 or do {
         print "Failed to add authentication cookie to xauth.\n";
         exit 1;
     };
 
     my $screen_arg = "${WIDTH}x${HEIGHT}";
-    my $xephyr_cmd = "Xephyr -auth $XSUNABA_XAUTH -screen $screen_arg -br -nolisten tcp $XSUNABA_DISPLAY";
+    my $xephyr_cmd = "$XEPHYR -auth $XSUNABA_XAUTH -screen $screen_arg -br -nolisten tcp $XSUNABA_DISPLAY";
 
     # Run Xephyr in the background using fork
     my $pid = fork();
@@ -122,7 +127,7 @@ sub launch_application {
         print "Launching '$APPLICATION' on display $XSUNABA_DISPLAY...\n";
     }
     # Create the .Xauthority file if it doesn't exist
-    my $touch_cmd = "doas -u $XSUNABA_USER touch /home/$XSUNABA_USER/.Xauthority";
+    my $touch_cmd = "$DOAS -u $XSUNABA_USER touch /home/$XSUNABA_USER/.Xauthority";
     system($touch_cmd) == 0 or do {
         print "Failed to touch .Xauthority for $XSUNABA_USER.\n";
         kill 'TERM', $XSUNABA_XEPHYR_PID;
@@ -130,21 +135,21 @@ sub launch_application {
     };
 
     # Add the authentication cookie for the sandbox user
-    my $xauth_add_cmd = "doas -u $XSUNABA_USER xauth add $XSUNABA_DISPLAY . $XSUNABA_MCOOKIE";
+    my $xauth_add_cmd = "$DOAS -u $XSUNABA_USER $XAUTH add $XSUNABA_DISPLAY . $XSUNABA_MCOOKIE";
     system($xauth_add_cmd) == 0 or do {
         print "Failed to add authentication cookie for $XSUNABA_USER.\n";
         kill 'TERM', $XSUNABA_XEPHYR_PID;
-        system("xauth -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY");
+        system("$XAUTH -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY");
         exit 1;
     };
 
     # Launch the application with the DISPLAY variable set
-    my $app_cmd = "doas -u $XSUNABA_USER env DISPLAY=$XSUNABA_DISPLAY $APPLICATION";
+    my $app_cmd = "$DOAS -u $XSUNABA_USER env DISPLAY=$XSUNABA_DISPLAY $APPLICATION";
     system($app_cmd) == 0 or do {
         print "Failed to run the application as $XSUNABA_USER\n";
         kill 'TERM', $XSUNABA_XEPHYR_PID;
-        system("xauth -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY");
-        system("doas -u $XSUNABA_USER xauth remove $XSUNABA_DISPLAY");
+        system("$XAUTH -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY");
+        system("$DOAS -u $XSUNABA_USER $XAUTH remove $XSUNABA_DISPLAY");
         exit 1;
     };
 
@@ -172,12 +177,12 @@ sub clear_authentication_cookie {
     if ($VERBOSE eq 'true') {
         print "Clearing authentication cookie for display $XSUNABA_DISPLAY...\n";
     }
-    my $remove_cmd = "xauth -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY";
+    my $remove_cmd = "$XAUTH -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY";
     system($remove_cmd) == 0 or do {
         print "Failed to remove authentication cookie from xauth.\n";
         exit 1;
     };
-    my $remove_cmd2 = "doas -u $XSUNABA_USER xauth remove $XSUNABA_DISPLAY";
+    my $remove_cmd2 = "$DOAS -u $XSUNABA_USER $XAUTH remove $XSUNABA_DISPLAY";
     system($remove_cmd2) == 0 or do {
         print "Failed to remove authentication cookie for $XSUNABA_USER.\n";
         exit 1;
