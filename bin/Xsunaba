@@ -34,16 +34,17 @@ use warnings;
 use File::Basename;
 
 # Environment variables and default values
-my $VERBOSE         = $ENV{VERBOSE}         // 'false';
-my $XSUNABA_DISPLAY = $ENV{XSUNABA_DISPLAY} // ':32';
-my $XSUNABA_USER    = $ENV{XSUNABA_USER}    // 'xsunaba';
-my $HOME            = $ENV{HOME}            // die "HOME not found";
-my $XSUNABA_XAUTH   = "$HOME/.Xauthority-xsunaba";
-my $LOCAL_SOCKETS   = "/tmp/.X11-unix";
-my $WIDTH           = $ENV{WIDTH}  // 1024;
-my $HEIGHT          = $ENV{HEIGHT} // 768;
-my $APPLICATION     = join(" ", @ARGV);
+my $VERBOSE         = $ENV{VERBOSE}         // 'false';  # Verbose mode
+my $XSUNABA_DISPLAY = $ENV{XSUNABA_DISPLAY} // ':32';    # Default display
+my $XSUNABA_USER    = $ENV{XSUNABA_USER}    // 'xsunaba';# Default user
+my $HOME            = $ENV{HOME}            // die "HOME not found"; # Home directory
+my $XSUNABA_XAUTH   = "$HOME/.Xauthority-xsunaba"; # Xauthority file
+my $LOCAL_SOCKETS   = "/tmp/.X11-unix";     # Local sockets directory
+my $WIDTH           = $ENV{WIDTH}  // 1024; # Default window width
+my $HEIGHT          = $ENV{HEIGHT} // 768;  # Default window height
+my $APPLICATION     = join(" ", @ARGV);     # Application to run
 
+# Paths to required binaries
 my $OPENSSL = '/usr/bin/openssl';
 my $XAUTH = '/usr/X11R6/bin/xauth';
 my $DOAS = '/usr/bin/doas';
