@@ -37,7 +37,7 @@ For OpenBSD users, certain X11 applications in the ports tree also utilize [pled
 2. If you do not already have an `/etc/doas.conf`, one will be created for you. If you are running `make install` as `root`, you must explicitly specify your username (replace `<username>` with your actual username):
 
     ```sh
-    doas make install USER=<username>
+    make install USER=<username>
     ```
 
 3. To run an X11 application in the sandbox, prefix your command with `Xsunaba`. For example:
