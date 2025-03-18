@@ -21,19 +21,23 @@ build:
 # Install target
 .PHONY: install
 install: ${BIN}/${PROG} ${MAN}/${PROG}.${SECTION} install-user install-doas
+	@echo "Installing ${PROG} in ${BINDIR}..."
 	mkdir -p ${BINDIR}
 	install -m755 ${BIN}/${PROG} ${BINDIR}
+	@echo "Installing the man page in ${MANDIR}..."
 	mkdir -p ${MANDIR}
 	install -m444 ${MAN}/${PROG}.${SECTION} ${MANDIR}
 
 # Install user target
 .PHONY: install-user
 install-user:
+	@echo "Checking if the user ${XSUNABA_USER} exists..."
 	id ${XSUNABA_USER} || useradd -m ${XSUNABA_USER}
 
 # Install doas configuration target
 .PHONY: install-doas
 install-doas:
+	@echo "Configuring doas for passwordless access..."
 	! test -f /etc/doas.conf \
 		&& touch /etc/doas.conf \
 		&& chown root:wheel /etc/doas.conf \
@@ -53,17 +57,21 @@ install-sndio-cookie:
 # Uninstall target
 .PHONY: uninstall
 uninstall: uninstall-doas uninstall-user
+	@echo "Uninstalling ${PROG} from ${BINDIR}..."
 	rm ${BINDIR}/${PROG}
+	@echo "Uninstalling the man page from ${MANDIR}..."
 	rm ${MANDIR}/${PROG}.${SECTION}
 
 # Uninstall user target
 .PHONY: uninstall-user
 uninstall-user:
+	@echo "Removing the user ${XSUNABA_USER}..."
 	rmuser ${XSUNABA_USER}
 
 # Uninstall doas configuration target
 .PHONY: uninstall-doas
 uninstall-doas:
+	@echo "Removing doas configuration..."
 	test -f /etc/doas.conf \
 		&& grep -p "${DOAS_LINE}" /etc/doas.conf \
 		&& sed -i "s/${DOAS_LINE}//g" /etc/doas.conf
@@ -71,6 +79,7 @@ uninstall-doas:
 # Uninstall sndio cookie target
 .PHONY: uninstall-sndio-cookie
 uninstall-sndio-cookie:
+	@echo "Removing sndio cookie from ${XSUNABA_USER}..."
 	rm ~${XSUNABA_USER}/.sndio/cookie
 
 # Help target
