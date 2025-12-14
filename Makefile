@@ -1,6 +1,10 @@
+# See the LICENSE file at the top of the project tree for copyright
+# and license details.
+
 # Variables
 PREFIX ?= /usr/local
 PROG = Xsunaba
+PROG_SRC = ${PROG}.pl
 SECTION = 1
 BIN = bin
 MAN = man
@@ -20,10 +24,10 @@ build:
 
 # Install target
 .PHONY: install
-install: ${BIN}/${PROG} ${MAN}/${PROG}.${SECTION} install-user install-doas
+install: ${BIN}/${PROG_SRC} ${MAN}/${PROG}.${SECTION} install-user install-doas
 	@echo "Installing ${PROG} in ${BINDIR}..."
 	mkdir -p ${BINDIR}
-	install -m755 ${BIN}/${PROG} ${BINDIR}
+	install -m755 ${BIN}/${PROG_SRC} ${BINDIR}/${PROG}
 	@echo "Installing the man page in ${MANDIR}..."
 	mkdir -p ${MANDIR}
 	install -m444 ${MAN}/${PROG}.${SECTION} ${MANDIR}

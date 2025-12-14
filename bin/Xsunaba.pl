@@ -1,9 +1,9 @@
 #!/usr/bin/perl
-#
+
 # Xsunaba - Tool for sandboxing X11 applications
 #
 # Originally based on http://blog.sleeplessbeastie.eu/2013/07/19/how-to-create-browser-sandbox/
-#
+
 # MIT License
 #
 # Copyright (c) 2013 Milosz Galazka
@@ -33,6 +33,34 @@ use strict;
 use warnings;
 use File::Basename;
 
+my $GREEN = "\e[32m";
+my $YELLOW = "\e[33m";
+my $RED = "\e[31m";
+my $CYAN = "\e[36m";
+my $BOLD = "\e[1m";
+my $RESET = "\e[0m";
+
+sub log {
+    my ($msg) = @_;
+    print "${GREEN}✅ [INFO]${RESET} $msg\n";
+}
+
+sub warn {
+    my ($msg) = @_;
+    print STDERR "${YELLOW}⚠️  [WARN]${RESET} $msg\n";
+}
+
+sub error {
+    my ($msg, $code) = @_;
+    $code //= 1;
+    print STDERR "${RED}❌ [ERROR]${RESET} $msg\n";
+    exit $code;
+}
+
+# Backward-compatible aliases
+sub info     { log(@_); }
+sub warn_msg { warn(@_); }
+
 # Environment variables and default values
 my $VERBOSE         = $ENV{VERBOSE}         // 'false';  # Verbose mode
 my $XSUNABA_DISPLAY = $ENV{XSUNABA_DISPLAY} // ':32';    # Default display
@@ -61,7 +89,7 @@ my $XSUNABA_XEPHYR_PID;
 sub adjust_window_dimensions {
     my $first_arg = shift // "";
     if ($VERBOSE eq 'true') {
-        print "Checking for window geometry hacks for '" . basename($first_arg) . "'...\n";
+        log("Checking for window geometry hacks for '" . basename($first_arg) . "'...");
     }
     my $base = basename($first_arg);
     if ($base eq "chrome") {
@@ -82,19 +110,18 @@ sub find_unused_display {
     }
     if ($VERBOSE eq 'true') {
         (my $display_num = $XSUNABA_DISPLAY) =~ s/^://;
-        print "Using display $display_num\n";
+        log("Using display $display_num");
     }
 }
 
 # Function: Start Xephyr and configure authentication
 sub start_xephyr {
     if ($VERBOSE eq 'true') {
-        print "Starting Xephyr on display $XSUNABA_DISPLAY...\n";
+        log("Starting Xephyr on display $XSUNABA_DISPLAY...");
     }
     my $xauth_cmd = "$XAUTH -f $XSUNABA_XAUTH add $XSUNABA_DISPLAY . $XSUNABA_MCOOKIE";
     system($xauth_cmd) == 0 or do {
-        print "Failed to add authentication cookie to xauth.\n";
-        exit 1;
+        error("Failed to add authentication cookie to xauth.");
     };
 
     my $screen_arg = "${WIDTH}x${HEIGHT}";
@@ -116,8 +143,7 @@ sub start_xephyr {
         if ( kill 0, $XSUNABA_XEPHYR_PID ) {
             print "Xephyr started with PID $XSUNABA_XEPHYR_PID\n" if $VERBOSE eq 'true';
         } else {
-            print "Failed to start Xephyr. Exiting.\n";
-            exit 1;
+            error("Failed to start Xephyr. Exiting.");
         }
     }
 }
@@ -125,20 +151,19 @@ sub start_xephyr {
 # Function: Launch the application in the sandbox environment (as user XSUNABA_USER)
 sub launch_application {
     if ($VERBOSE eq 'true') {
-        print "Launching '$APPLICATION' on display $XSUNABA_DISPLAY...\n";
+        log("Launching '$APPLICATION' on display $XSUNABA_DISPLAY...");
     }
     # Create the .Xauthority file if it doesn't exist
     my $touch_cmd = "$DOAS -u $XSUNABA_USER touch /home/$XSUNABA_USER/.Xauthority";
     system($touch_cmd) == 0 or do {
-        print "Failed to touch .Xauthority for $XSUNABA_USER.\n";
+        error("Failed to touch .Xauthority for $XSUNABA_USER.");
         kill 'TERM', $XSUNABA_XEPHYR_PID;
-        exit 1;
     };
 
     # Add the authentication cookie for the sandbox user
     my $xauth_add_cmd = "$DOAS -u $XSUNABA_USER $XAUTH add $XSUNABA_DISPLAY . $XSUNABA_MCOOKIE";
     system($xauth_add_cmd) == 0 or do {
-        print "Failed to add authentication cookie for $XSUNABA_USER.\n";
+        warn("Failed to add authentication cookie for $XSUNABA_USER.");
         kill 'TERM', $XSUNABA_XEPHYR_PID;
         system("$XAUTH -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY");
         exit 1;
@@ -147,48 +172,46 @@ sub launch_application {
     # Launch the application with the DISPLAY variable set
     my $app_cmd = "$DOAS -u $XSUNABA_USER env DISPLAY=$XSUNABA_DISPLAY $APPLICATION";
     system($app_cmd) == 0 or do {
-        print "Failed to run the application as $XSUNABA_USER\n";
+        warn("Failed to run the application as $XSUNABA_USER");
         kill 'TERM', $XSUNABA_XEPHYR_PID;
         system("$XAUTH -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY");
         system("$DOAS -u $XSUNABA_USER $XAUTH remove $XSUNABA_DISPLAY");
         exit 1;
     };
 
-    print "Application '$APPLICATION' launched successfully\n" if $VERBOSE eq 'true';
+    log("Application '$APPLICATION' launched successfully") if $VERBOSE eq 'true';
 }
 
 # Function: Stop Xephyr
 sub stop_xephyr {
     if ($VERBOSE eq 'true') {
-        print "Stopping Xephyr with PID $XSUNABA_XEPHYR_PID...\n";
+        log("Stopping Xephyr with PID $XSUNABA_XEPHYR_PID...");
     }
     if ( kill 0, $XSUNABA_XEPHYR_PID ) {
         kill 'TERM', $XSUNABA_XEPHYR_PID;
         sleep 1;
         if ( kill 0, $XSUNABA_XEPHYR_PID ) {
-            print "Failed to stop Xephyr. Exiting.\n";
-            exit 1;
+            error("Failed to stop Xephyr. Exiting.");
         }
     }
-    print "Xephyr stopped successfully\n" if $VERBOSE eq 'true';
+    log("Xephyr stopped successfully") if $VERBOSE eq 'true';
 }
 
 # Function: Remove the authentication cookie
 sub clear_authentication_cookie {
     if ($VERBOSE eq 'true') {
-        print "Clearing authentication cookie for display $XSUNABA_DISPLAY...\n";
+        log("Clearing authentication cookie for display $XSUNABA_DISPLAY...");
     }
     my $remove_cmd = "$XAUTH -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY";
     system($remove_cmd) == 0 or do {
-        print "Failed to remove authentication cookie from xauth.\n";
-        exit 1;
+        error("Failed to remove authentication cookie from xauth.");
     };
     my $remove_cmd2 = "$DOAS -u $XSUNABA_USER $XAUTH remove $XSUNABA_DISPLAY";
     system($remove_cmd2) == 0 or do {
-        print "Failed to remove authentication cookie for $XSUNABA_USER.\n";
+        warn("Failed to remove authentication cookie for $XSUNABA_USER.");
         exit 1;
     };
-    print "Authentication cookie cleared\n" if $VERBOSE eq 'true';
+    log("Authentication cookie cleared") if $VERBOSE eq 'true';
 }
 
 # Main script execution
@@ -196,8 +219,7 @@ sub main {
     if (@ARGV) {
         adjust_window_dimensions($ARGV[0]);
     } else {
-        print "No application specified. Exiting.\n";
-        exit 1;
+        error("No application specified. Exiting.");
     }
 
     find_unused_display();
