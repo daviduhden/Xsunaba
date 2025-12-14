@@ -40,12 +40,12 @@ my $CYAN = "\e[36m";
 my $BOLD = "\e[1m";
 my $RESET = "\e[0m";
 
-sub log {
+sub log_info {
     my ($msg) = @_;
     print "${GREEN}✅ [INFO]${RESET} $msg\n";
 }
 
-sub warn {
+sub warn_info {
     my ($msg) = @_;
     print STDERR "${YELLOW}⚠️  [WARN]${RESET} $msg\n";
 }
@@ -56,10 +56,6 @@ sub error {
     print STDERR "${RED}❌ [ERROR]${RESET} $msg\n";
     exit $code;
 }
-
-# Backward-compatible aliases
-sub info     { log(@_); }
-sub warn_msg { warn(@_); }
 
 # Environment variables and default values
 my $VERBOSE         = $ENV{VERBOSE}         // 'false';  # Verbose mode
@@ -89,7 +85,7 @@ my $XSUNABA_XEPHYR_PID;
 sub adjust_window_dimensions {
     my $first_arg = shift // "";
     if ($VERBOSE eq 'true') {
-        log("Checking for window geometry hacks for '" . basename($first_arg) . "'...");
+        log_info("Checking for window geometry hacks for '" . basename($first_arg) . "'...");
     }
     my $base = basename($first_arg);
     if ($base eq "chrome") {
@@ -110,14 +106,14 @@ sub find_unused_display {
     }
     if ($VERBOSE eq 'true') {
         (my $display_num = $XSUNABA_DISPLAY) =~ s/^://;
-        log("Using display $display_num");
+        log_info("Using display $display_num");
     }
 }
 
 # Function: Start Xephyr and configure authentication
 sub start_xephyr {
     if ($VERBOSE eq 'true') {
-        log("Starting Xephyr on display $XSUNABA_DISPLAY...");
+        log_info("Starting Xephyr on display $XSUNABA_DISPLAY...");
     }
     my $xauth_cmd = "$XAUTH -f $XSUNABA_XAUTH add $XSUNABA_DISPLAY . $XSUNABA_MCOOKIE";
     system($xauth_cmd) == 0 or do {
@@ -151,7 +147,7 @@ sub start_xephyr {
 # Function: Launch the application in the sandbox environment (as user XSUNABA_USER)
 sub launch_application {
     if ($VERBOSE eq 'true') {
-        log("Launching '$APPLICATION' on display $XSUNABA_DISPLAY...");
+        log_info("Launching '$APPLICATION' on display $XSUNABA_DISPLAY...");
     }
     # Create the .Xauthority file if it doesn't exist
     my $touch_cmd = "$DOAS -u $XSUNABA_USER touch /home/$XSUNABA_USER/.Xauthority";
@@ -163,7 +159,7 @@ sub launch_application {
     # Add the authentication cookie for the sandbox user
     my $xauth_add_cmd = "$DOAS -u $XSUNABA_USER $XAUTH add $XSUNABA_DISPLAY . $XSUNABA_MCOOKIE";
     system($xauth_add_cmd) == 0 or do {
-        warn("Failed to add authentication cookie for $XSUNABA_USER.");
+        warn_info("Failed to add authentication cookie for $XSUNABA_USER.");
         kill 'TERM', $XSUNABA_XEPHYR_PID;
         system("$XAUTH -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY");
         exit 1;
@@ -172,20 +168,20 @@ sub launch_application {
     # Launch the application with the DISPLAY variable set
     my $app_cmd = "$DOAS -u $XSUNABA_USER env DISPLAY=$XSUNABA_DISPLAY $APPLICATION";
     system($app_cmd) == 0 or do {
-        warn("Failed to run the application as $XSUNABA_USER");
+        warn_info("Failed to run the application as $XSUNABA_USER");
         kill 'TERM', $XSUNABA_XEPHYR_PID;
         system("$XAUTH -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY");
         system("$DOAS -u $XSUNABA_USER $XAUTH remove $XSUNABA_DISPLAY");
         exit 1;
     };
 
-    log("Application '$APPLICATION' launched successfully") if $VERBOSE eq 'true';
+    log_info("Application '$APPLICATION' launched successfully") if $VERBOSE eq 'true';
 }
 
 # Function: Stop Xephyr
 sub stop_xephyr {
     if ($VERBOSE eq 'true') {
-        log("Stopping Xephyr with PID $XSUNABA_XEPHYR_PID...");
+        log_info("Stopping Xephyr with PID $XSUNABA_XEPHYR_PID...");
     }
     if ( kill 0, $XSUNABA_XEPHYR_PID ) {
         kill 'TERM', $XSUNABA_XEPHYR_PID;
@@ -194,13 +190,13 @@ sub stop_xephyr {
             error("Failed to stop Xephyr. Exiting.");
         }
     }
-    log("Xephyr stopped successfully") if $VERBOSE eq 'true';
+    log_info("Xephyr stopped successfully") if $VERBOSE eq 'true';
 }
 
 # Function: Remove the authentication cookie
 sub clear_authentication_cookie {
     if ($VERBOSE eq 'true') {
-        log("Clearing authentication cookie for display $XSUNABA_DISPLAY...");
+        log_info("Clearing authentication cookie for display $XSUNABA_DISPLAY...");
     }
     my $remove_cmd = "$XAUTH -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY";
     system($remove_cmd) == 0 or do {
@@ -208,10 +204,10 @@ sub clear_authentication_cookie {
     };
     my $remove_cmd2 = "$DOAS -u $XSUNABA_USER $XAUTH remove $XSUNABA_DISPLAY";
     system($remove_cmd2) == 0 or do {
-        warn("Failed to remove authentication cookie for $XSUNABA_USER.");
+        warn_info("Failed to remove authentication cookie for $XSUNABA_USER.");
         exit 1;
     };
-    log("Authentication cookie cleared") if $VERBOSE eq 'true';
+    log_info("Authentication cookie cleared") if $VERBOSE eq 'true';
 }
 
 # Main script execution
