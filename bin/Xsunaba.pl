@@ -62,7 +62,7 @@ sub die_tool {
 my $VERBOSE         = $ENV{VERBOSE}         // 'false';      # Verbose mode
 my $XSUNABA_DISPLAY = $ENV{XSUNABA_DISPLAY} // ':32';        # Default display
 my $XSUNABA_USER    = $ENV{XSUNABA_USER}    // 'xsunaba';    # Default user
-my $HOME            = $ENV{HOME} // die "HOME not found";    # Home directory
+my $HOME            = $ENV{HOME} // die_tool "HOME not found";    # Home directory
 my $XSUNABA_XAUTH   = "$HOME/.Xauthority-xsunaba";    # Xauthority file
 my $LOCAL_SOCKETS   = "/tmp/.X11-unix";               # Local sockets directory
 my $WIDTH           = $ENV{WIDTH}  // 1024;           # Default window width
@@ -133,12 +133,12 @@ sub start_xephyr {
     # Run Xephyr in the background using fork
     my $pid = fork();
     if ( !defined $pid ) {
-        die "Cannot fork: $!";
+        die_tool "Cannot fork: $!";
     }
     if ( $pid == 0 ) {
 
         # Child process: replace current process with Xephyr
-        exec($xephyr_cmd) or die "Cannot exec Xephyr: $!";
+        exec($xephyr_cmd) or die_tool "Cannot exec Xephyr: $!";
     }
     else {
         # Parent process: store the PID and wait for Xephyr to start
