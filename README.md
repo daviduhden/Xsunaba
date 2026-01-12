@@ -2,7 +2,7 @@
 
 ## Overview
 
-Xsunaba is a utility that runs X11 (or simply X) applications within a basic sandbox (derived from the Japanese word “sunaba”) to limit access to your files and X11 events (notably keyboard input). The sandbox is composed of two main parts:
+Xsunaba is a utility that runs X11 (or simply X) applications within a basic sandbox (derived from the Japanese word "sunaba") to limit access to your files and X11 events (notably keyboard input). The sandbox is composed of two main parts:
 
 1. A separate local user account under which the X11 application runs, helping to restrict access to your personal files (assuming the proper permissions are in place).
 2. A separate X session, created and rendered in a window within your active X display using `Xephyr`. This prevents the sandboxed X application from monitoring X11 events in your parent X session and display.
