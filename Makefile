@@ -5,14 +5,16 @@
 PREFIX ?= /usr/local
 PROG = Xsunaba
 PROG_SRC = ${PROG}.pl
+PROG_PATH = ${.PARSEDIR}/${BIN}/${PROG_SRC}
 SECTION = 1
 BIN = bin
 MAN = man
 BINDIR = ${PREFIX}/${BIN}
 MANDIR = ${PREFIX}/${MAN}/man${SECTION}
+MAN_PATH = ${.PARSEDIR}/${MAN}/${PROG}.${SECTION}
 XSUNABA_USER ?= xsunaba
-DOAS_LINE = "permit nopass ${USER} as ${XSUNABA_USER}"
-INFO = ==> 
+DOAS_LINE = permit nopass ${USER} as ${XSUNABA_USER}
+INFO = ==>
 
 # Default target
 .PHONY: all
@@ -25,13 +27,11 @@ build:
 
 # Install target
 .PHONY: install
-install: ${BIN}/${PROG_SRC} ${MAN}/${PROG}.${SECTION} install-user install-doas
-	@echo "${INFO} Installing ${PROG} -> ${BINDIR}/${PROG}"
-	mkdir -p ${BINDIR}
-	install -m755 ${BIN}/${PROG_SRC} ${BINDIR}/${PROG}
-	@echo "${INFO} Installing man page -> ${MANDIR}/${PROG}.${SECTION}"
-	mkdir -p ${MANDIR}
-	install -m444 ${MAN}/${PROG}.${SECTION} ${MANDIR}
+install: ${PROG_PATH} ${MAN_PATH} install-user install-doas
+	@echo "${INFO} Installing ${PROG} -> ${BINDIR}/${PROG}" && \
+		mkdir -p ${BINDIR} && install -m755 ${PROG_PATH} ${BINDIR}/${PROG}
+	@echo "${INFO} Installing man page -> ${MANDIR}/${PROG}.${SECTION}" && \
+		mkdir -p ${MANDIR} && install -m444 ${MAN_PATH} ${MANDIR}
 	@echo "${INFO} Install complete"
 
 # Install user target
@@ -44,21 +44,15 @@ install-user:
 .PHONY: install-doas
 install-doas:
 	@echo "${INFO} Configuring doas for passwordless access"
-	! test -f /etc/doas.conf \
-		&& touch /etc/doas.conf \
-		&& chown root:wheel /etc/doas.conf \
-		&& chmod 600 /etc/doas.conf
-	grep -q "${DOAS_LINE}" /etc/doas.conf \
-		|| echo "${DOAS_LINE}" >> /etc/doas.conf
+	(test -f /etc/doas.conf || touch /etc/doas.conf) && chown root:wheel /etc/doas.conf && chmod 600 /etc/doas.conf
+	grep -q "${DOAS_LINE}" /etc/doas.conf || echo "${DOAS_LINE}" >> /etc/doas.conf
 
 # Install sndio cookie target
 .PHONY: install-sndio-cookie
 install-sndio-cookie:
 	@echo "${INFO} Copying sndio cookie from '${USER}' to '${XSUNABA_USER}'"
 	mkdir -p ~${XSUNABA_USER}/.sndio
-	cp ~${USER}/.sndio/cookie ~${XSUNABA_USER}/.sndio/
-	chown ${XSUNABA_USER}:${XSUNABA_USER} ~${XSUNABA_USER}/.sndio/cookie
-	chmod 600 ~${XSUNABA_USER}/.sndio/cookie
+	install -o ${XSUNABA_USER} -g ${XSUNABA_USER} -m 600 ~${USER}/.sndio/cookie ~${XSUNABA_USER}/.sndio/
 
 # Uninstall target
 .PHONY: uninstall
@@ -92,15 +86,12 @@ uninstall-sndio-cookie:
 # Help target
 .PHONY: help
 help:
-	@echo "Makefile targets:"
-	@echo "  all                  - Default target, installs the script and man page"
-	@echo "  build                - Build target, does nothing"
-	@echo "  install              - Installs the script and man page"
-	@echo "  install-user         - Ensures the xsunaba user exists"
-	@echo "  install-doas         - Configures doas for passwordless access"
-	@echo "  install-sndio-cookie - Copies sndio cookie to xsunaba user"
-	@echo "  uninstall            - Uninstalls the script and man page"
-	@echo "  uninstall-user       - Removes the xsunaba user"
-	@echo "  uninstall-doas       - Removes doas configuration"
-	@echo "  uninstall-sndio-cookie - Removes sndio cookie from xsunaba user"
-	@echo "  help                 - Displays this help message"
+	@printf "Makefile targets:\n  all                  - Default target, installs the script and man page\n  build                - Build target, does nothing\n  install              - Installs the script and man page\n  install-user         - Ensures the xsunaba user exists\n  install-doas         - Configures doas for passwordless access\n  install-sndio-cookie - Copies sndio cookie to xsunaba user\n  uninstall            - Uninstalls the script and man page\n  uninstall-user       - Removes the xsunaba user\n  uninstall-doas       - Removes doas configuration\n  uninstall-sndio-cookie - Removes sndio cookie from xsunaba user\n  clean                - Removes build artifacts\n  test                 - Placeholder for tests\n  help                 - Displays this help message\n"
+
+.PHONY: clean
+clean:
+	@echo "${INFO} Nothing to clean"
+
+.PHONY: test
+test:
+	@echo "${INFO} No automated tests defined"
