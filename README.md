@@ -1,104 +1,139 @@
 # Xsunaba
 
-## Overview
+## OVERVIEW
 
-Xsunaba is a utility that runs X11 (or simply X) applications within a basic sandbox (derived from the Japanese word "sunaba") to limit access to your files and X11 events (notably keyboard input). The sandbox is composed of two main parts:
+`Xsunaba` runs X (X11) applications inside a minimal sandbox to constrain filesystem access and X events (notably keyboard input). "Sunaba" is the romanization of the Japanese word 砂場, meaning sandbox.
 
-1. A separate local user account under which the X11 application runs, helping to restrict access to your personal files (assuming the proper permissions are in place).
-2. A separate X session, created and rendered in a window within your active X display using `Xephyr`. This prevents the sandboxed X application from monitoring X11 events in your parent X session and display.
+The sandbox is composed of:
 
-**IMPORTANT:** This setup does not guarantee that access is entirely blocked outside of the sandbox user and display, but it does provide a marginal increase in security.
+1. A separate, less-privileged local user under which the X application executes, restricting access to your files when permissions are properly set
+2. A separate X session rendered via `Xephyr` inside your existing display, preventing the sandboxed application from observing X events in the parent session
 
-Xsunaba is based on [a script by Milosz Galazka](https://blog.sleeplessbeastie.eu/2013/07/19/how-to-create-browser-sandbox/) (see the [Internet Archive Wayback Machine](https://web.archive.org/web/20210115000000*/https://blog.sleeplessbeastie.eu/2013/07/19/how-to-create-browser-sandbox/)) and has been ported to [OpenBSD](http://www.openbsd.org/).
+**IMPORTANT:** _This is a mitigation, not an absolute isolation boundary; leakage outside the sandbox user and display remains possible._
 
-For OpenBSD users, certain X11 applications in the ports tree also utilize [pledge(2)](https://man.openbsd.org/pledge) and [unveil(2)](https://man.openbsd.org/unveil) to further restrict filesystem access.
+On OpenBSD, some X applications in ports additionally employ [pledge(2)](https://man.openbsd.org/pledge) and [unveil(2)](https://man.openbsd.org/unveil) to trim filesystem and network access.
 
-## Prerequisites
+Limitations of the `Xephyr` approach:
 
-- [OpenBSD](https://www.openbsd.org/faq/faq4.html#Download)
-- X11 (ideally running [xenodm(1)](https://man.openbsd.org/xenodm))
-- [doas(1)](https://man.openbsd.org/doas)
-- [Xephyr(1)](https://man.openbsd.org/Xephyr)
-- [xauth(1)](https://man.openbsd.org/xauth)
-- [openssl(1)](https://man.openbsd.org/openssl)
+* No hardware acceleration for OpenGL; rendering falls back to [LLVMpipe](https://docs.mesa3d.org/drivers/llvmpipe.html). Expect acceptable 2D in some cases and very poor 3D performance.
+* No display manager is spawned; the sandbox does not run the sandbox user's `~/.xsession` or `~/.xinitrc`, nor start a window manager. If an application needs environment setup, wrap it in a script that prepares the environment and invoke that via `Xsunaba`.
+
+## PREREQUISITES
+
+* OpenBSD
+* [X(7)](https://man.openbsd.org/X) and [Xorg(1)](https://man.openbsd.org/Xorg) (preferably with the [xenodm(1)](https://man.openbsd.org/xenodm) display manager)
+* [doas(1)](https://man.openbsd.org/doas)
+* [Xephyr(1)](https://man.openbsd.org/Xephyr)
+* [xauth(1)](https://man.openbsd.org/xauth)
+* [openssl(1)](https://man.openbsd.org/openssl)
 
 ### Optional
 
-- [sndio(7)](https://man.openbsd.org/sndio)
+* [xclip(1)](https://github.com/astrand/xclip)
+* [sndio(7)](https://man.openbsd.org/sndio)
 
-## Usage
+## INSTALLATION
 
-1. To install Xsunaba, create the `xsunaba` user and update your `/etc/doas.conf` to allow your user to run applications within the sandbox without entering a password:
+Install `Xsunaba`, the manual page, create the `xsunaba` user, and add a doas rule allowing your user to run sandboxed applications without a password:
 
-    ```sh
-    doas make install USER="$USER"
-    ```
+```
+$ doas make install USER="$USER"
+```
 
-2. If you do not already have an `/etc/doas.conf`, one will be created for you. If you are running `make install` as `root`, you must explicitly specify your username (replace `<username>` with your actual username):
+If `/etc/doas.conf` does not exist, it is created. When running `make install` as `root`, explicitly pass your username (replace `<username>`):
 
-    ```sh
-    make install USER=<username>
-    ```
+```
+# make install USER=<username>
+```
 
-3. To run an X11 application in the sandbox, prefix your command with `Xsunaba`. For example:
+## USAGE
 
-    ```sh
-    Xsunaba chrome --incognito &
-    Xsunaba firefox --private-window &
-    ```
+Prefix your X application command with `Xsunaba`, for example:
 
-> **Note:** Xsunaba automatically applies window geometry adjustments to ensure the `Xephyr` display fits properly for applications like `chrome` and `firefox`.
+```
+Xsunaba chrome --incognito &
 
-### Advanced Usage
+Xsunaba firefox --private-window &
+```
 
-You can customize Xsunaba's behavior by setting the following environment variables:
+**NOTE:** `Xsunaba` applies geometry adjustments so `chrome` and `firefox` fit the `Xephyr` display.
 
-- **VERBOSE:** Set to `true` for verbose output. *(Default: `false`)*
-- **XSUNABA_DISPLAY:** Specify a custom display number (including the leading colon) to use when starting Xephyr. *(Default: `:32`)*
-- **XSUNABA_USER:** Define the username under which X11 applications will run. *(Default: `xsunaba`)*
-- **WIDTH:** Set a custom width (in pixels) for the Xephyr display. *(Default: `1024`)*
-- **HEIGHT:** Set a custom height (in pixels) for the Xephyr display. *(Default: `768`)*
-- **XSUNABA_XEPHYR_PID:** Optionally set the PID of the Xephyr process. *(Default: None)*
+### ADVANCED USAGE
+
+You can override defaults with these environment variables:
+
+* `VERBOSE`: Set to `true` to show verbose output. Default: `false`.
+* `XSUNABA_DISPLAY`: Set a custom display number (incl. leading colon) to start `Xephyr` displays at. Default: `:32`.
+* `XSUNABA_USER`: Set a username to run X application as. Default: `xsunaba`.
+* `WIDTH`: Set a custom `Xephyr` display width in pixels. Default: `1024`.
+* `HEIGHT`: Set a custom `Xephyr` display height in pixels. Default: `768`.
 
 #### Alternate and/or Multiple Sandbox Users
 
-If you wish to use a different username for the sandbox or create multiple sandbox users, follow these steps (replace `<sandbox_user>` with your desired username):
+If you would like your sandbox user to have a different username than `xsunaba` or would like to create multiple sandbox users, you can create them 
+as follows (replacing `<sandbox_user>` with your preferred sandbox username):
 
-1. Create the sandbox user:
+```
+doas make install-user XSUNABA_USER=<sandbox_user>
+doas make install-doas XSUNABA_USER=<sandbox_user> USER=$USER
+```
 
-    ```sh
-    doas make install-user XSUNABA_USER=<sandbox_user>
-    ```
+You can then execute `Xsunaba` with your custom sandbox user, for example (replacing `<sandbox_user>`):
 
-2. Configure passwordless access for the sandbox user:
+```
+XSUNABA_USER=<sandbox_user> Xsunaba firefox --private-window &
+```
 
-    ```sh
-    doas make install-doas XSUNABA_USER=<sandbox_user> USER=$USER
-    ```
+#### Shared Selection and/or Clipboard
 
-3. Run Xsunaba with the custom sandbox user:
+To mirror the sandbox user's X selection or clipboard to your user with `xclip`, after launching an application in the sandbox run:
 
-    ```sh
-    XSUNABA_USER=<sandbox_user> Xsunaba firefox --private-window &
-    ```
+##### Selection
+
+```
+doas -u "$XSUNABA_USER" xclip -display "$XSUNABA_DISPLAY" -out | xclip -in
+```
+
+##### Clipboard
+
+```
+doas -u "$XSUNABA_USER" xclip -display "$XSUNABA_DISPLAY" -selection clipboard -out | xclip -selection clipboard -in
+```
 
 #### Shared Files
 
-If you need to share files between your main user and the `xsunaba` user, it is recommended to create a directory owned by the `xsunaba` user and grant group access to your primary user (typically the same as your username). However, it is advisable to move only specific files into and out of this shared directory when necessary rather than using it for permanent storage, as any X11 application run through Xsunaba will have access to it.
+To share files, create a directory owned by `xsunaba` and grant group access to your primary user's group (typically matching your username). Move only the specific files required in and out; any application run via `Xsunaba` will see the shared directory.
 
-> **IMPORTANT:** Enabling shared file access can weaken the security provided by the sandbox.
+*IMPORTANT:* This will weaken the security of your sandbox!
 
 #### Audio
 
-By default, X11 applications running in the Xsunaba sandbox do not have access to play or record audio, in order to preserve privacy. If you wish to enable audio, copy your `~/.sndio/cookie` file to the `xsunaba` user following the instructions in the [Authentication section of sndio(7)](https://man.openbsd.org/sndio#Authentication). This allows sandboxed applications to access [sndiod(8)](https://man.openbsd.org/sndiod):
+By default, sandboxed applications have no audio playback/recording for privacy. Following the ['Authentication' section in sndio(7)](https://man.openbsd.org/sndio#Authentication), you can copy `~/.sndio/cookie` to the `xsunaba` user to permit access to [sndiod(8)](https://man.openbsd.org/sndiod):
 
-```sh
+```
 doas -u xsunaba mkdir -p ~xsunaba/.sndio
-doas cp $HOME/.sndio/cookie ~xsunaba/.sndio/
-doas chown xsunaba:xsunaba ~xsunaba/.sndio/cookie
-doas chmod 600 ~xsunaba/.sndio/cookie
+doas install -o xsunaba -g xsunaba -m 600 ~${USER}/.sndio/cookie ~xsunaba/.sndio/
 ```
 
-## License
+The Makefile provides an `install-sndio-cookie` target to automate this:
 
-Xsunaba is released under the [MIT License](LICENSE) by permission.
+```
+doas make install-sndio-cookie USER=$USER
+```
+
+*IMPORTANT:* If kernel recording is enabled via [sysctl(8)](https://man.openbsd.org/sysctl) or [sysctl.conf(5)](https://man.openbsd.org/sysctl.conf) (`kern.audio.record=1`), sandboxed applications can access the microphone.
+
+If audio fails inside the sandbox, verify:
+
+1. You have played any audio as your primary user to create the sndio(7) cookie
+2. You copied (not symlinked) `~/.sndio/cookie` to the sandbox user
+3. Ownership is correct (e.g., `xsunaba:xsunaba`) and mode is `600`
+4. The cookie contents match between your user and the sandbox user
+
+## HISTORY
+
+`Xsunaba` is based on [a script by Milosz Galazka](https://blog.sleeplessbeastie.eu/2013/07/19/how-to-create-browser-sandbox/) (see [Internet Archive's Wayback Machine archive](https://web.archive.org/web/20210115000000*/https://blog.sleeplessbeastie.eu/2013/07/19/how-to-create-browser-sandbox/)) and ported to [OpenBSD](http://www.openbsd.org/) and `doas` by Morgan Aldridge. Milosz granted permission for this implementation to be released under the MIT license.
+
+## LICENSE
+
+Released under the [MIT License](LICENSE) by permission.
