@@ -57,6 +57,38 @@ my $XAUTH   = '/usr/X11R6/bin/xauth';
 my $DOAS    = '/usr/bin/doas';
 my $XEPHYR  = '/usr/X11R6/bin/Xephyr';
 
+sub setup_sandbox {
+    return unless $^O eq 'openbsd';
+
+    eval {
+        require OpenBSD::Pledge;
+        require OpenBSD::Unveil;
+
+        my @rx_paths = ( $OPENSSL, $XAUTH, $DOAS, $XEPHYR, '/bin/sh' );
+        my @r_paths  = ( '/etc', '/dev' );
+        my @rwc_paths =
+          ( $HOME, "/home/$XSUNABA_USER", '/tmp', $LOCAL_SOCKETS );
+
+        for my $p (@rx_paths) {
+            OpenBSD::Unveil::unveil( $p, 'rx' );
+        }
+        for my $p (@r_paths) {
+            OpenBSD::Unveil::unveil( $p, 'r' );
+        }
+        for my $p (@rwc_paths) {
+            OpenBSD::Unveil::unveil( $p, 'rwc' );
+        }
+
+        OpenBSD::Unveil::unveil();
+        OpenBSD::Pledge::pledge(
+            'stdio rpath wpath cpath fattr proc exec inet dns unix')
+          or die "pledge failed";
+        1;
+    } or do {
+        logw("OpenBSD pledge/unveil setup failed: $@");
+    };
+}
+
 # Generate authentication cookie using openssl
 my $XSUNABA_MCOOKIE = `$OPENSSL rand -hex 16`;
 chomp($XSUNABA_MCOOKIE);
@@ -211,6 +243,7 @@ sub clear_authentication_cookie {
 
 # Main script execution
 sub main {
+    setup_sandbox();
     if (@ARGV) {
         adjust_window_dimensions( $ARGV[0] );
     }
