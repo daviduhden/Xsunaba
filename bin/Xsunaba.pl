@@ -2,9 +2,8 @@
 
 # Tool for sandboxing X11 applications
 #
-# Uses Xephyr to create a nested X server and runs
-# the specified application inside it, with authentication
-# cookies managed via xauth.
+# Uses Xephyr to create a nested X server and runs the specified
+# application inside it, with authentication cookies managed via xauth.
 # Usage:
 #   Xsunaba.pl [application and args]
 #
@@ -15,7 +14,7 @@ use strict;
 use warnings;
 use File::Basename;
 
-# Logging
+# Logging helpers
 my $no_color  = 0;
 my $is_tty    = ( -t STDOUT )             ? 1 : 0;
 my $use_color = ( !$no_color && $is_tty ) ? 1 : 0;
@@ -60,6 +59,7 @@ my $XEPHYR  = '/usr/X11R6/bin/Xephyr';
 sub setup_sandbox {
     return unless $^O eq 'openbsd';
 
+    # Unveil only the binaries and paths required for Xephyr and xauth.
     eval {
         require OpenBSD::Pledge;
         require OpenBSD::Unveil;
@@ -89,14 +89,14 @@ sub setup_sandbox {
     };
 }
 
-# Generate authentication cookie using openssl
+# Generate an authentication cookie using openssl.
 my $XSUNABA_MCOOKIE = `$OPENSSL rand -hex 16`;
 chomp($XSUNABA_MCOOKIE);
 
-# Global variable for Xephyr's PID
+# Global variable for Xephyr's PID.
 my $XSUNABA_XEPHYR_PID;
 
-# Function: Adjusts the window dimensions based on the application
+# Function: Adjust window dimensions for known browsers.
 sub adjust_window_dimensions {
     my $first_arg = shift // "";
     if ( $VERBOSE eq 'true' ) {
@@ -114,7 +114,7 @@ sub adjust_window_dimensions {
     }
 }
 
-# Function: Find an unused X display between :32 and :99
+# Function: Find an unused X display between :32 and :99.
 sub find_unused_display {
     for my $i ( 32 .. 99 ) {
         my $sock_file = "$LOCAL_SOCKETS/X$i";
@@ -129,7 +129,7 @@ sub find_unused_display {
     }
 }
 
-# Function: Start Xephyr and configure authentication
+# Function: Start Xephyr and configure authentication.
 sub start_xephyr {
     if ( $VERBOSE eq 'true' ) {
         logi("Starting Xephyr on display $XSUNABA_DISPLAY...");
@@ -144,22 +144,22 @@ sub start_xephyr {
     my $xephyr_cmd =
 "$XEPHYR -auth $XSUNABA_XAUTH -screen $screen_arg -br -nolisten tcp $XSUNABA_DISPLAY";
 
-    # Run Xephyr in the background using fork
+    # Run Xephyr in the background using fork.
     my $pid = fork();
     if ( !defined $pid ) {
         die_tool "Cannot fork: $!";
     }
     if ( $pid == 0 ) {
 
-        # Child process: replace current process with Xephyr
+        # Child process: replace current process with Xephyr.
         exec($xephyr_cmd) or die_tool "Cannot exec Xephyr: $!";
     }
     else {
-        # Parent process: store the PID and wait for Xephyr to start
+        # Parent process: store the PID and wait for Xephyr to start.
         $XSUNABA_XEPHYR_PID = $pid;
         sleep 3;
 
-        # Verify that the Xephyr process is still running
+        # Verify that the Xephyr process is still running.
         if ( kill 0, $XSUNABA_XEPHYR_PID ) {
             print "Xephyr started with PID $XSUNABA_XEPHYR_PID\n"
               if $VERBOSE eq 'true';
@@ -170,13 +170,13 @@ sub start_xephyr {
     }
 }
 
-# Function: Launch the application in the sandbox environment (as user XSUNABA_USER)
+# Function: Launch the application in the sandbox (as user XSUNABA_USER).
 sub launch_application {
     if ( $VERBOSE eq 'true' ) {
         logi("Launching '$APPLICATION' on display $XSUNABA_DISPLAY...");
     }
 
-    # Create the .Xauthority file if it doesn't exist
+    # Create the .Xauthority file if it doesn't exist.
     my $touch_cmd =
       "$DOAS -u $XSUNABA_USER touch /home/$XSUNABA_USER/.Xauthority";
     system($touch_cmd) == 0 or do {
@@ -184,7 +184,7 @@ sub launch_application {
         kill 'TERM', $XSUNABA_XEPHYR_PID;
     };
 
-    # Add the authentication cookie for the sandbox user
+    # Add the authentication cookie for the sandbox user.
     my $xauth_add_cmd =
       "$DOAS -u $XSUNABA_USER $XAUTH add $XSUNABA_DISPLAY . $XSUNABA_MCOOKIE";
     system($xauth_add_cmd) == 0 or do {
@@ -194,7 +194,7 @@ sub launch_application {
         exit 1;
     };
 
-    # Launch the application with the DISPLAY variable set
+    # Launch the application with the DISPLAY variable set.
     my $app_cmd =
       "$DOAS -u $XSUNABA_USER env DISPLAY=$XSUNABA_DISPLAY $APPLICATION";
     system($app_cmd) == 0 or do {
@@ -209,7 +209,7 @@ sub launch_application {
       if $VERBOSE eq 'true';
 }
 
-# Function: Stop Xephyr
+# Function: Stop Xephyr.
 sub stop_xephyr {
     if ( $VERBOSE eq 'true' ) {
         logi("Stopping Xephyr with PID $XSUNABA_XEPHYR_PID...");
@@ -224,7 +224,7 @@ sub stop_xephyr {
     logi("Xephyr stopped successfully") if $VERBOSE eq 'true';
 }
 
-# Function: Remove the authentication cookie
+# Function: Remove the authentication cookie.
 sub clear_authentication_cookie {
     if ( $VERBOSE eq 'true' ) {
         logi("Clearing authentication cookie for display $XSUNABA_DISPLAY...");
