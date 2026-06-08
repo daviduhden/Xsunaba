@@ -74,7 +74,7 @@ uninstall-user:
 uninstall-doas:
 	@echo "${INFO} Removing doas configuration"
 	test -f /etc/doas.conf \
-		&& grep -p "${DOAS_LINE}" /etc/doas.conf \
+		&& grep -q "${DOAS_LINE}" /etc/doas.conf \
 		&& sed -i "s/${DOAS_LINE}//g" /etc/doas.conf
 
 # Uninstall sndio cookie target
