@@ -1,68 +1,400 @@
-.Dd $Mdocdate: August 14 2024 $
+.Dd $Mdocdate: August 1 2026 $
 .Dt XSUNABA 1
 .Os
 .Sh NAME
 .Nm Xsunaba
-.Nd execute X applications in a sandboxed X display
+.Nd sandbox X11 applications with Xephyr, pledge, and unveil
 .Sh SYNOPSIS
 .Nm
-.Bk -words
 .Op Ar command Op Ar argument ...
-.Ek
 .Sh DESCRIPTION
-The 
-.Nm
-utility provides a rudimentary sandboxed environment, both user and 
-.Xr X 7
-session, to run an X application in. The intent is to limit access to the user's own files and prevent the X application from accessing 
-.Xr XEvents 3
-events destined for other applications, especially keyboard input.
-.Pp
-IMPORTANT: 
-.Nm
-is really a proof of concept and in no way guarantees that it will actually prevent access to your data!
-.Pp
-.Sh ENVIRONMENT
-The following environment variables affect 
-.Nm
-behavior:
-.Pp
-.Bl -tag -width "POSIXLY_CORRECT"
-.It Ev VERBOSE
-Shows verbose output if set to 'true', otherwise suppresses verbose output.
-.It XSUNABA_DISPLAY
 The
-.Xr X 7
-display to start
+.Nm
+utility provides a two-layer sandbox for running X11 GUI applications
+on OpenBSD:
+.Bl -enum -compact -offset indent
+.It
+Display isolation via a nested
 .Xr Xephyr 1
-displays on.
-.It XSUNABA_USER
-Username to run
-.Xr X 7
-applications as. If unset, the
-.Cm xsunaba
-user will be used.
-.It WIDTH
-The width to use for the
-.Xr Xephyr 1
-display resolution. If unset, a default width of 1024 will be used.
-.It HEIGHT
-The height to use for the
-.Xr Xephyr 1
-display resolution. If unset, a default height of 768 will be used.
+X server, which prevents the application from reading
+.Xr XEvents 3
+(keystrokes, mouse input, clipboard) intended for other windows in the
+parent X session.
+.It
+Process restriction via
+.Xr pledge 2
+and
+.Xr unveil 2 ,
+which limit the system calls and filesystem access available to the
+application process.
+Both are configured through environment variables.
 .El
 .Pp
-.Sh EXAMPLES
-Open a
-.Xr firefox 1
-private browser window in a sandboxed display:
+When invoked from the command line,
+.Nm
+starts Xephyr on an unused display (default
+.Ql :32
+\-
+.Ql :99 ) ,
+generates an X11 magic cookie for authentication, forks the target
+application with user-specified pledge and unveil restrictions, waits
+for it to exit, then stops Xephyr and cleans up the authentication
+cookie.
 .Pp
-.Dl $ Xsunaba firefox --private-window
+.Nm
+can also be loaded as a Perl module via
+.Cm require
+to incorporate pledge/unveil functionality into custom scripts,
+either with or without the Xephyr display layer.
+.Sh ENVIRONMENT
+.Bl -tag -width "XSUNABA_UNVEIL"
+.It Ev XSUNABA_PLEDGE
+Space-separated list of pledge promises applied to the sandboxed
+application immediately before
+.Xr exec 3 .
 .Pp
-.Sh SEE ALSO
-.Xr doas 1
-.Xr openssl 1
-.Xr X 7
-.Xr xauth 1
+Default:
+.Ql stdio rpath wpath cpath fattr proc exec inet dns unix tty .
+.Pp
+Set to an empty string to disable pledge for the application.
+See
+.Xr pledge 2
+for the full set of available promises.
+.It Ev XSUNABA_UNVEIL
+Comma-separated list of
+.Ar path : Ar perm
+entries passed to
+.Xr unveil 2
+for the sandboxed application.
+.Pp
+When unset, the application inherits the launcher's filesystem view
+and no additional unveil restrictions are applied (the filesystem is
+fully visible).
+When set, only the listed paths are accessible after unveil is locked;
+all other paths become invisible.
+.Pp
+Permission codes are single-letter abbreviations that may be combined:
+.Pp
+.Bl -tag -width "rwxc" -compact -offset indent
+.It r
+Read files, list directories.
+.It rx
+Read and execute.
+.It rw
+Read and write existing files.
+.It rwx
+Read, write, and execute existing files.
+.It rwc
+Read, write, and create new files.
+.It rwxc
+Read, write, execute, and create (full access).
+.El
+.Pp
+Example:
+.Ql /usr/X11R6/bin/xterm:rx,/tmp:rwc,/etc:r,/dev:r .
+.Pp
+The
+.Pa /tmp/.X11-unix
+socket directory and
+.Pa /dev
+are always unveiled for the application with
+.Ql rwc
+and
+.Ql r
+respectively, so they do not need to be listed unless you wish to
+change their permissions.
+.It Ev XSUNABA_DISPLAY
+Starting X display number for
+.Xr Xephyr 1 .
+If the socket
+.Pa /tmp/.X11-unix/X Ns Ao Ar N Ac
+already exists,
+.Nm
+scans upward from this number to find a free display.
+Default:
+.Ql :32 .
+.It Ev WIDTH
 .Xr Xephyr 1
-.Xr XEvents 3
+display width in pixels.
+Default:
+.Ql 1024 .
+.It Ev HEIGHT
+.Xr Xephyr 1
+display height in pixels.
+Default:
+.Ql 768 .
+.It Ev VERBOSE
+When set to any true value, emits diagnostic messages to standard
+error during setup, application launch, and cleanup.
+Each message is prefixed with
+.Ql [Xsunaba] .
+.El
+.Sh FILES
+.Bl -tag -width "$HOME/.Xauthority-xsunaba"
+.It Pa $HOME/.Xauthority-xsunaba
+Temporary X authority file created for the Xephyr session.
+Contains the magic cookie used to authenticate the application
+connection.
+Removed during cleanup.
+.It Pa /tmp/.X11-unix/
+Directory scanned for existing X11 sockets to find a free display
+number.
+.It Pa /usr/bin/openssl
+Used to generate the X11 magic cookie (128-bit random hex string).
+.It Pa /usr/X11R6/bin/xauth
+Used to add and remove X11 authentication cookies.
+.It Pa /usr/X11R6/bin/Xephyr
+The nested X server executable.
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Pp
+If no command is provided, the usage message is printed to standard
+error and the exit status is 255.
+.Sh EXAMPLES
+Launch Firefox with filesystem restrictions and a tighter pledge:
+.Bd -literal -offset indent
+$ XSUNABA_UNVEIL="/usr/X11R6/bin/firefox:rx,/tmp:rwc,/etc:r" \e
+  XSUNABA_PLEDGE="stdio rpath wpath cpath proc exec inet dns unix tty" \e
+  Xsunaba firefox --private-window
+.Ed
+.Pp
+Run xterm with minimal access, verbose output enabled:
+.Bd -literal -offset indent
+$ VERBOSE=1 \e
+  XSUNABA_UNVEIL="/usr/X11R6/bin/xterm:rx,/tmp:rwc,/etc:r" \e
+  Xsunaba xterm
+.Ed
+.Pp
+Use Xsunaba as a Perl module for a custom launcher (no Xephyr):
+.Bd -literal -offset indent
+#!/usr/bin/perl
+require '/usr/local/bin/Xsunaba';
+
+Xsunaba::sandbox(
+    app    => 'xterm',
+    unveil => [
+        '/usr/X11R6/bin/xterm:rx',
+        '/tmp:rwc',
+        '/etc:r',
+    ],
+    pledge => 'stdio rpath wpath cpath inet dns unix tty',
+);
+.Ed
+.Pp
+Use the low-level API for maximum control:
+.Bd -literal -offset indent
+#!/usr/bin/perl
+require '/usr/local/bin/Xsunaba';
+
+Xsunaba::unveil('/usr/X11R6/bin/firefox',  'rx');
+Xsunaba::unveil("$ENV{HOME}/.mozilla",     'rwc');
+Xsunaba::unveil('/tmp',                     'rwc');
+Xsunaba::unveil('/etc',                     'r');
+Xsunaba::unveil('/usr/local/lib',           'rx');
+Xsunaba::unveil('/usr/lib',                 'rx');
+Xsunaba::unveil_lock();
+Xsunaba::pledge('stdio rpath wpath cpath proc exec inet dns unix tty');
+
+exec 'firefox', '--private-window' or die "exec: $!";
+.Ed
+.Pp
+Override the default pledge promises:
+.Bd -literal -offset indent
+#!/usr/bin/perl
+require '/usr/local/bin/Xsunaba';
+$Xsunaba::PLEGE_PROMISES = 'stdio rpath inet dns';
+Xsunaba::sandbox(app => 'curl', args => ['-O', 'https://example.com']);
+.Ed
+.Pp
+Launch a sandbox on a custom display with custom geometry:
+.Bd -literal -offset indent
+$ XSUNABA_DISPLAY=":40" WIDTH=1280 HEIGHT=900 Xsunaba gimp
+.Ed
+.Sh DIAGNOSTICS
+Set
+.Ev VERBOSE
+to any true value to see diagnostic messages on standard error:
+.Bd -literal -offset indent
+[INFO] using display :32
+[INFO] Xephyr started (PID 12345)
+[INFO] launched 'firefox' (PID 12346)
+[INFO] stopping Xephyr (PID 12345)
+[INFO] cleanup complete
+.Ed
+.Pp
+Warnings (always printed) indicate non-fatal issues such as a failed
+pledge call on a non-OpenBSD system.
+Errors (always printed) indicate fatal conditions such as
+.Ev HOME
+not being set or Xephyr failing to start.
+.Sh MODULE API
+.Nm
+may be loaded as a Perl module using
+.Cm require :
+.Pp
+.Dl require '/usr/local/bin/Xsunaba';
+.Pp
+The following functions are exported into the
+.Sy Xsunaba
+namespace:
+.Bl -tag -width "unveil_lock()"
+.It Fn pledge $promises
+Invoke
+.Xr pledge 2
+with the given space-separated promise string.
+If
+.Ar $promises
+is
+.Dv undef
+or omitted, the package variable
+.Va $Xsunaba::PLEGE_PROMISES
+is used as the default.
+No-op on systems other than OpenBSD.
+.It Fn unveil $path $perm
+Invoke
+.Xr unveil 2
+for
+.Ar $path
+with permission
+.Ar $perm
+(default
+.Ql r ) .
+Must be called before
+.Fn unveil_lock .
+No-op on systems other than OpenBSD, or if unveil is already locked.
+.It Fn unveil_lock
+Lock the unveil configuration by calling
+.Fn unveil
+with two
+.Dv NULL
+arguments.
+After this call, the filesystem is restricted to the set of paths
+announced with
+.Fn unveil ,
+and no further unveil calls are permitted.
+No-op on systems other than OpenBSD.
+.It Fn sandbox %opts
+Convenience wrapper that applies unveil and pledge, then
+.Xr exec 3 Ns s
+the application directly (no
+.Xr Xephyr 1 ) .
+Accepts the following keys:
+.Bl -tag -width "unveil" -compact -offset indent
+.It Cm app
+Executable to run (required).
+.It Cm args
+Array reference of command-line arguments.
+.It Cm pledge
+Promise string (defaults to
+.Va $Xsunaba::PLEGE_PROMISES ) .
+.It Cm unveil
+Array reference of
+.Ql path:perm
+strings.
+.It Cm lock
+Boolean controlling whether
+.Fn unveil_lock
+is called automatically.
+Defaults to true when
+.Cm unveil
+entries exist.
+.El
+.It Fn launch %opts
+Full sandbox launcher: starts
+.Xr Xephyr 1 ,
+forks the application with pledge and unveil, waits for the
+application to exit, then stops Xephyr and removes the X11
+authentication cookie.
+Accepts the following keys:
+.Bl -tag -width "display" -compact -offset indent
+.It Cm app
+Executable to run (required).
+.It Cm args
+Array reference of command-line arguments.
+.It Cm display
+X display number (default
+.Ql :32 ) .
+.It Cm width
+Xephyr width in pixels (default
+.Ql 1024 ) .
+.It Cm height
+Xephyr height in pixels (default
+.Ql 768 ) .
+.It Cm pledge
+Promise string for the application.
+.It Cm unveil
+Array reference of
+.Ql path:perm
+strings.
+.El
+.El
+.Ss Package variables
+.Bl -tag -width "PLEGE_PROMISES"
+.It Va $Xsunaba::PLEGE_PROMISES
+Default pledge promise string used by
+.Fn pledge ,
+.Fn sandbox ,
+and
+.Fn launch
+when no explicit promise string is provided.
+Default:
+.Ql stdio rpath wpath cpath fattr proc exec inet dns unix tty .
+Set this variable before calling any sandbox function to override the
+default for the entire script.
+.El
+.Sh SEE ALSO
+.Xr openssl 1 ,
+.Xr perl 1 ,
+.Xr xauth 1 ,
+.Xr Xephyr 1 ,
+.Xr pledge 2 ,
+.Xr unveil 2 ,
+.Xr exec 3 ,
+.Xr XEvents 3 ,
+.Xr X 7
+.Sh HISTORY
+.Nm
+is based on a script by
+.An Milosz Galazka
+.Pq circa 2013
+and was ported to OpenBSD and
+.Xr doas 1
+by
+.An Morgan Aldridge
+.Pq 2020 .
+.An David Uhden Collado
+rewrote it in Perl
+.Pq 2025
+and refactored it into a pledge/unveil variable wrapper with Xephyr
+display isolation
+.Pq 2026 .
+.Sh CAVEATS
+.Bl -bullet
+.It
+Xephyr uses software rendering
+.Pq LLVMpipe .
+2D performance is acceptable; 3D performance is poor and unsuitable
+for games or GPU-intensive applications.
+.It
+There is no window manager inside the Xephyr display.
+Applications run full-screen at the configured resolution.
+If your application needs a session script, wrap it in a shell script
+and pass that script as the command.
+.It
+.Nm
+does not create a separate user account or use
+.Xr doas 1 .
+The application runs as your user, restricted by pledge and unveil.
+For additional user-based isolation, wrap the application with
+.Xr doas 1
+yourself or use the pre-2026 version of
+.Nm
+which included user sandboxing.
+.It
+.Nm
+is a mitigation, not a guarantee.
+A determined attacker who compromises the application may still find
+ways to escape the sandbox.
+Combine it with other OpenBSD security practices.
+.El
