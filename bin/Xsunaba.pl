@@ -1,261 +1,245 @@
 #!/usr/bin/perl
 
-# Tool for sandboxing X11 applications
-#
-# Uses Xephyr to create a nested X server and runs the specified
-# application inside it, with authentication cookies managed via xauth.
-# Usage:
-#   Xsunaba.pl [application and args]
-#
-# See the LICENSE file at the top of the project tree for copyright
-# and license details.
+package Xsunaba;
 
 use strict;
 use warnings;
 use File::Basename;
 
-# Logging helpers
-my $no_color  = 0;
-my $is_tty    = ( -t STDOUT )             ? 1 : 0;
-my $use_color = ( !$no_color && $is_tty ) ? 1 : 0;
+our @ISA       = qw(Exporter);
+our @EXPORT_OK = qw(pledge unveil unveil_lock sandbox launch);
+our %EXPORT_TAGS = (all => \@EXPORT_OK);
 
-my ( $GREEN, $YELLOW, $RED, $CYAN, $BOLD, $RESET ) = ( "", "", "", "", "", "" );
-if ($use_color) {
-    $GREEN  = "\e[32m";
-    $YELLOW = "\e[33m";
-    $RED    = "\e[31m";
-    $CYAN   = "\e[36m";
-    $BOLD   = "\e[1m";
-    $RESET  = "\e[0m";
+our $PLEGE_PROMISES = 'stdio rpath wpath cpath fattr proc exec inet dns unix tty';
+
+my $UNVEIL_LOCKED = 0;
+
+sub _color {
+	my ($code, $msg) = @_;
+	(-t STDOUT) ? "\e[${code}m${msg}\e[0m" : $msg;
 }
 
-sub logi { print "${GREEN}✅ [INFO]${RESET} $_[0]\n"; }
-sub logw { print STDERR "${YELLOW}⚠️ [WARN]${RESET} $_[0]\n"; }
-sub loge { print STDERR "${RED}❌ [ERROR]${RESET} $_[0]\n"; }
+sub _dbg { warn "[Xsunaba] @_\n" if $ENV{VERBOSE} || $ENV{XSUNABA_VERBOSE} }
+sub _inf { print _color("1;32", "[INFO]") . " @_\n" if $ENV{VERBOSE} }
+sub _wrn { print STDERR _color("1;33", "[WARN]") . " @_\n" }
+sub _err { print STDERR _color("1;31", "[ERROR]") . " @_\n" }
 
-sub die_tool {
-    my ($msg) = @_;
-    loge($msg);
-    exit 1;
+sub pledge {
+	my ($promises) = @_;
+	$promises //= $PLEGE_PROMISES;
+	unless ($^O eq 'openbsd') { _dbg "pledge: not on OpenBSD"; return }
+	require OpenBSD::Pledge;
+	OpenBSD::Pledge::pledge($promises)
+	  or _wrn "pledge($promises): $!";
 }
 
-# Environment variables and default values
-my $VERBOSE         = $ENV{VERBOSE}         // 'false';      # Verbose mode
-my $XSUNABA_DISPLAY = $ENV{XSUNABA_DISPLAY} // ':32';        # Default display
-my $XSUNABA_USER    = $ENV{XSUNABA_USER}    // 'xsunaba';    # Default user
-my $HOME            = $ENV{HOME} // die_tool "HOME not found";  # Home directory
-my $XSUNABA_XAUTH   = "$HOME/.Xauthority-xsunaba";    # Xauthority file
-my $LOCAL_SOCKETS   = "/tmp/.X11-unix";               # Local sockets directory
-my $WIDTH           = $ENV{WIDTH}  // 1024;           # Default window width
-my $HEIGHT          = $ENV{HEIGHT} // 768;            # Default window height
-my $APPLICATION     = join( " ", @ARGV );             # Application to run
-
-# Paths to required binaries
-my $OPENSSL = '/usr/bin/openssl';
-my $XAUTH   = '/usr/X11R6/bin/xauth';
-my $DOAS    = '/usr/bin/doas';
-my $XEPHYR  = '/usr/X11R6/bin/Xephyr';
-
-sub setup_sandbox {
-    return unless $^O eq 'openbsd';
-
-    # Unveil only the binaries and paths required for Xephyr and xauth.
-    eval {
-        require OpenBSD::Pledge;
-        require OpenBSD::Unveil;
-
-        my @rx_paths = ( $OPENSSL, $XAUTH, $DOAS, $XEPHYR, '/bin/sh' );
-        my @r_paths  = ( '/etc', '/dev' );
-        my @rwc_paths =
-          ( $HOME, "/home/$XSUNABA_USER", '/tmp', $LOCAL_SOCKETS );
-
-        for my $p (@rx_paths) {
-            OpenBSD::Unveil::unveil( $p, 'rx' );
-        }
-        for my $p (@r_paths) {
-            OpenBSD::Unveil::unveil( $p, 'r' );
-        }
-        for my $p (@rwc_paths) {
-            OpenBSD::Unveil::unveil( $p, 'rwc' );
-        }
-
-        OpenBSD::Unveil::unveil();
-        OpenBSD::Pledge::pledge(
-            'stdio rpath wpath cpath fattr proc exec inet dns unix')
-          or die "pledge failed";
-        1;
-    } or do {
-        logw("OpenBSD pledge/unveil setup failed: $@");
-    };
+sub unveil {
+	my ($path, $perm) = @_;
+	$perm //= 'r';
+	unless ($^O eq 'openbsd') { _dbg "unveil: not on OpenBSD"; return }
+	return _dbg("unveil($path): already locked") if $UNVEIL_LOCKED;
+	require OpenBSD::Unveil;
+	OpenBSD::Unveil::unveil($path, $perm);
 }
 
-# Generate an authentication cookie using openssl.
-my $XSUNABA_MCOOKIE = `$OPENSSL rand -hex 16`;
-chomp($XSUNABA_MCOOKIE);
-
-# Global variable for Xephyr's PID.
-my $XSUNABA_XEPHYR_PID;
-
-# Function: Adjust window dimensions for known browsers.
-sub adjust_window_dimensions {
-    my $first_arg = shift // "";
-    if ( $VERBOSE eq 'true' ) {
-        logi(   "Checking for window geometry hacks for '"
-              . basename($first_arg)
-              . "'..." );
-    }
-    my $base = basename($first_arg);
-    if ( $base eq "chrome" ) {
-        $APPLICATION .=
-          " -window-size=${WIDTH},${HEIGHT} --window-position=0,0";
-    }
-    elsif ( $base eq "firefox" ) {
-        $APPLICATION .= " -width $WIDTH -height $HEIGHT";
-    }
+sub unveil_lock {
+	unless ($^O eq 'openbsd') { _dbg "unveil_lock: not on OpenBSD"; return }
+	return if $UNVEIL_LOCKED;
+	require OpenBSD::Unveil;
+	OpenBSD::Unveil::unveil();
+	$UNVEIL_LOCKED = 1;
 }
 
-# Function: Find an unused X display between :32 and :99.
-sub find_unused_display {
-    for my $i ( 32 .. 99 ) {
-        my $sock_file = "$LOCAL_SOCKETS/X$i";
-        if ( !-e $sock_file ) {
-            $XSUNABA_DISPLAY = ":$i";
-            last;
-        }
-    }
-    if ( $VERBOSE eq 'true' ) {
-        ( my $display_num = $XSUNABA_DISPLAY ) =~ s/^://;
-        logi("Using display $display_num");
-    }
+sub sandbox {
+	my %opts = @_;
+
+	$PLEGE_PROMISES = $ENV{XSUNABA_PLEDGE}
+	  if exists $ENV{XSUNABA_PLEDGE};
+
+	my @unveil_entries;
+	if (exists $opts{unveil}) {
+		@unveil_entries =
+		  ref $opts{unveil} eq 'ARRAY' ? @{ $opts{unveil} } : $opts{unveil};
+	} elsif ($ENV{XSUNABA_UNVEIL}) {
+		@unveil_entries = split /\s*,\s*/, $ENV{XSUNABA_UNVEIL};
+	}
+
+	for my $entry (@unveil_entries) {
+		next unless $entry;
+		my ($path, $perm) = split /:/, $entry, 2;
+		unveil($path, $perm // 'r');
+	}
+
+	unveil_lock() if @unveil_entries && !exists $opts{lock};
+
+	my $pstr = exists $opts{pledge} ? $opts{pledge} : $PLEGE_PROMISES;
+	pledge($pstr) if defined $pstr && $pstr ne '';
+
+	return unless $opts{app};
+	my @args = @{ $opts{args} // [] };
+	exec $opts{app}, @args or die "exec: $!";
 }
 
-# Function: Start Xephyr and configure authentication.
-sub start_xephyr {
-    if ( $VERBOSE eq 'true' ) {
-        logi("Starting Xephyr on display $XSUNABA_DISPLAY...");
-    }
-    my $xauth_cmd =
-      "$XAUTH -f $XSUNABA_XAUTH add $XSUNABA_DISPLAY . $XSUNABA_MCOOKIE";
-    system($xauth_cmd) == 0 or do {
-        loge("Failed to add authentication cookie to xauth.");
-    };
+sub launch {
+	my %opts = @_;
 
-    my $screen_arg = "${WIDTH}x${HEIGHT}";
-    my $xephyr_cmd =
-"$XEPHYR -auth $XSUNABA_XAUTH -screen $screen_arg -br -nolisten tcp $XSUNABA_DISPLAY";
+	my $display   = $opts{display} // $ENV{XSUNABA_DISPLAY} // ':32';
+	my $width     = $opts{width}   // $ENV{WIDTH}          // 1024;
+	my $height    = $opts{height}  // $ENV{HEIGHT}         // 768;
+	my $home      = $ENV{HOME} or die "HOME not set";
+	my $xauth_f   = "$home/.Xauthority-xsunaba";
+	my $sockets   = "/tmp/.X11-unix";
+	my $app       = $opts{app} or die "No application specified";
+	my @app_args  = @{ $opts{args} // [] };
 
-    # Run Xephyr in the background using fork.
-    my $pid = fork();
-    if ( !defined $pid ) {
-        die_tool "Cannot fork: $!";
-    }
-    if ( $pid == 0 ) {
+	my $openssl = '/usr/bin/openssl';
+	my $xauth   = '/usr/X11R6/bin/xauth';
+	my $xephyr  = '/usr/X11R6/bin/Xephyr';
 
-        # Child process: replace current process with Xephyr.
-        exec($xephyr_cmd) or die_tool "Cannot exec Xephyr: $!";
-    }
-    else {
-        # Parent process: store the PID and wait for Xephyr to start.
-        $XSUNABA_XEPHYR_PID = $pid;
-        sleep 3;
+	my $full_app = join(" ", $app, @app_args);
 
-        # Verify that the Xephyr process is still running.
-        if ( kill 0, $XSUNABA_XEPHYR_PID ) {
-            print "Xephyr started with PID $XSUNABA_XEPHYR_PID\n"
-              if $VERBOSE eq 'true';
-        }
-        else {
-            loge("Failed to start Xephyr. Exiting.");
-        }
-    }
+	# --- Launcher unveil (not locked: child will extend + lock) ---
+	if ($^O eq 'openbsd') {
+		eval {
+			require OpenBSD::Unveil;
+			OpenBSD::Unveil::unveil($_, 'rx')
+			  for ($openssl, $xauth, $xephyr, '/bin/sh');
+			OpenBSD::Unveil::unveil($_, 'r')
+			  for ('/etc', '/dev');
+			OpenBSD::Unveil::unveil($_, 'rwc')
+			  for ($home, '/tmp', $sockets);
+		};
+	}
+
+	# --- Generate cookie ---
+	my $cookie = `$openssl rand -hex 16`;
+	chomp $cookie;
+
+	# --- Find unused display ---
+	for my $i (32 .. 99) {
+		if (!-e "$sockets/X$i") {
+			$display = ":$i";
+			last;
+		}
+	}
+	_inf "using display $display";
+
+	# --- Geometry hacks for known browsers ---
+	my $base = basename($app);
+	if ($base eq 'chrome') {
+		$full_app .= " -window-size=${width},${height} --window-position=0,0";
+	} elsif ($base eq 'firefox') {
+		$full_app .= " -width $width -height $height";
+	}
+
+	# --- Add auth cookie for the Xephyr display ---
+	system("$xauth -f $xauth_f add $display . $cookie") == 0
+	  or do { _err "failed to add auth cookie"; return; };
+
+	# --- Start Xephyr ---
+	my $xephyr_pid = fork();
+	die "fork: $!" unless defined $xephyr_pid;
+
+	if ($xephyr_pid == 0) {
+		$ENV{DISPLAY} = '';
+		exec("$xephyr -auth $xauth_f -screen ${width}x${height}"
+			  . " -br -nolisten tcp $display");
+		die "exec Xephyr: $!";
+	}
+
+	_inf "Xephyr started (PID $xephyr_pid)";
+	sleep 3;
+
+	kill(0, $xephyr_pid)
+	  or do { _err "Xephyr failed to start"; return; };
+
+	# --- User-configured unveil entries for the app ---
+	my @app_unveil;
+	if (exists $opts{unveil}) {
+		@app_unveil =
+		  ref $opts{unveil} eq 'ARRAY' ? @{ $opts{unveil} } : $opts{unveil};
+	} elsif ($ENV{XSUNABA_UNVEIL}) {
+		@app_unveil = split /\s*,\s*/, $ENV{XSUNABA_UNVEIL};
+	}
+
+	my $app_pledge = $opts{pledge} // $ENV{XSUNABA_PLEDGE}
+	  // $PLEGE_PROMISES;
+
+	# --- Launch the application ---
+	my $app_pid = fork();
+	die "fork: $!" unless defined $app_pid;
+
+	if ($app_pid == 0) {
+		$ENV{DISPLAY} = $display;
+
+		if ($^O eq 'openbsd') {
+			eval {
+				require OpenBSD::Unveil;
+				require OpenBSD::Pledge;
+
+				# Child inherits parent's unveiled paths.
+				# Add app-specific paths and lock.
+				for my $entry (@app_unveil) {
+					next unless $entry;
+					my ($path, $perm) = split /:/, $entry, 2;
+					OpenBSD::Unveil::unveil($path,
+						$perm // 'r');
+				}
+
+				# Ensure X11 socket + devices reachable
+				OpenBSD::Unveil::unveil($sockets, 'rwc');
+				OpenBSD::Unveil::unveil('/dev',    'r');
+
+				OpenBSD::Unveil::unveil();
+
+				OpenBSD::Pledge::pledge($app_pledge)
+				  or die "pledge: $!";
+			};
+		}
+
+		exec($full_app);
+		die "exec $app: $!";
+	}
+
+	_inf "launched '$app' (PID $app_pid)";
+
+	# --- Pledge the launcher's own remaining surface ---
+	if ($^O eq 'openbsd') {
+		eval {
+			require OpenBSD::Pledge;
+			OpenBSD::Pledge::pledge(
+				'stdio rpath wpath cpath fattr proc exec')
+			  or _wrn "launcher pledge: $!";
+		};
+	}
+
+	# --- Wait for the application to exit ---
+	waitpid($app_pid, 0);
+
+	# --- Stop Xephyr ---
+	_inf "stopping Xephyr (PID $xephyr_pid)";
+	if (kill(0, $xephyr_pid)) {
+		kill('TERM', $xephyr_pid);
+		sleep 1;
+		kill('KILL', $xephyr_pid) if kill(0, $xephyr_pid);
+	}
+
+	# --- Remove auth cookies ---
+	system("$xauth -f $xauth_f remove $display");
+	_inf "cleanup complete";
 }
 
-# Function: Launch the application in the sandbox (as user XSUNABA_USER).
-sub launch_application {
-    if ( $VERBOSE eq 'true' ) {
-        logi("Launching '$APPLICATION' on display $XSUNABA_DISPLAY...");
-    }
+package main;
 
-    # Create the .Xauthority file if it doesn't exist.
-    my $touch_cmd =
-      "$DOAS -u $XSUNABA_USER touch /home/$XSUNABA_USER/.Xauthority";
-    system($touch_cmd) == 0 or do {
-        loge("Failed to touch .Xauthority for $XSUNABA_USER.");
-        kill 'TERM', $XSUNABA_XEPHYR_PID;
-    };
+unless (caller) {
+	$ENV{XSUNABA_VERBOSE} ||= $ENV{VERBOSE} // '';
 
-    # Add the authentication cookie for the sandbox user.
-    my $xauth_add_cmd =
-      "$DOAS -u $XSUNABA_USER $XAUTH add $XSUNABA_DISPLAY . $XSUNABA_MCOOKIE";
-    system($xauth_add_cmd) == 0 or do {
-        logw("Failed to add authentication cookie for $XSUNABA_USER.");
-        kill 'TERM', $XSUNABA_XEPHYR_PID;
-        system("$XAUTH -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY");
-        exit 1;
-    };
+	@ARGV or die "Usage: Xsunaba [command args...]\n";
 
-    # Launch the application with the DISPLAY variable set.
-    my $app_cmd =
-      "$DOAS -u $XSUNABA_USER env DISPLAY=$XSUNABA_DISPLAY $APPLICATION";
-    system($app_cmd) == 0 or do {
-        logw("Failed to run the application as $XSUNABA_USER");
-        kill 'TERM', $XSUNABA_XEPHYR_PID;
-        system("$XAUTH -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY");
-        system("$DOAS -u $XSUNABA_USER $XAUTH remove $XSUNABA_DISPLAY");
-        exit 1;
-    };
-
-    logi("Application '$APPLICATION' launched successfully")
-      if $VERBOSE eq 'true';
+	Xsunaba::launch(
+		app  => $ARGV[0],
+		args => [ @ARGV[ 1 .. $#ARGV ] ],
+	);
 }
 
-# Function: Stop Xephyr.
-sub stop_xephyr {
-    if ( $VERBOSE eq 'true' ) {
-        logi("Stopping Xephyr with PID $XSUNABA_XEPHYR_PID...");
-    }
-    if ( kill 0, $XSUNABA_XEPHYR_PID ) {
-        kill 'TERM', $XSUNABA_XEPHYR_PID;
-        sleep 1;
-        if ( kill 0, $XSUNABA_XEPHYR_PID ) {
-            loge("Failed to stop Xephyr. Exiting.");
-        }
-    }
-    logi("Xephyr stopped successfully") if $VERBOSE eq 'true';
-}
-
-# Function: Remove the authentication cookie.
-sub clear_authentication_cookie {
-    if ( $VERBOSE eq 'true' ) {
-        logi("Clearing authentication cookie for display $XSUNABA_DISPLAY...");
-    }
-    my $remove_cmd = "$XAUTH -f $XSUNABA_XAUTH remove $XSUNABA_DISPLAY";
-    system($remove_cmd) == 0 or do {
-        loge("Failed to remove authentication cookie from xauth.");
-    };
-    my $remove_cmd2 = "$DOAS -u $XSUNABA_USER $XAUTH remove $XSUNABA_DISPLAY";
-    system($remove_cmd2) == 0 or do {
-        logw("Failed to remove authentication cookie for $XSUNABA_USER.");
-        exit 1;
-    };
-    logi("Authentication cookie cleared") if $VERBOSE eq 'true';
-}
-
-# Main script execution
-sub main {
-    setup_sandbox();
-    if (@ARGV) {
-        adjust_window_dimensions( $ARGV[0] );
-    }
-    else {
-        loge("No application specified. Exiting.");
-    }
-
-    find_unused_display();
-    start_xephyr();
-    launch_application();
-    stop_xephyr();
-    clear_authentication_cookie();
-}
-
-main();
+1;
