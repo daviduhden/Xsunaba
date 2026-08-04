@@ -40,12 +40,12 @@ uninstall:
 .PHONY: help
 help:
 	@printf "\nMakefile targets:\n\
-	  all       - Default target, installs the script and man page\n\
-	  build     - Build target, does nothing (pure Perl)\n\
-	  install   - Installs the script and man page\n\
-	  uninstall - Removes the script and man page\n\
-	  clean     - Removes artifacts (none)\n\
-	  test      - Placeholder for tests\n\
+	  all       - Default target, installs the script and man page\n \
+	  build     - Build target, does nothing (pure Perl)\n \
+	  install   - Installs the script and man page\n \
+	  uninstall - Removes the script and man page\n \
+	  clean     - Removes artifacts (none)\n \
+	  test      - Placeholder for tests\n \
 	  help      - Displays this help message\n\n"
 
 .PHONY: clean
