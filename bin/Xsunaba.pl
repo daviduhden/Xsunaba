@@ -10,7 +10,8 @@ our @ISA       = qw(Exporter);
 our @EXPORT_OK = qw(pledge unveil unveil_lock sandbox launch);
 our %EXPORT_TAGS = (all => \@EXPORT_OK);
 
-our $PLEGE_PROMISES = 'stdio rpath wpath cpath fattr proc exec inet dns unix tty';
+our $PLEGE_PROMISES = 'stdio rpath wpath cpath fattr proc exec'
+    . ' inet dns unix tty';
 
 my $UNVEIL_LOCKED = 0;
 
@@ -19,7 +20,10 @@ sub _color {
 	(-t STDOUT) ? "\e[${code}m${msg}\e[0m" : $msg;
 }
 
-sub _dbg { warn "[Xsunaba] @_\n" if $ENV{VERBOSE} || $ENV{XSUNABA_VERBOSE} }
+sub _dbg {
+	warn "[Xsunaba] @_\n"
+	    if $ENV{VERBOSE} || $ENV{XSUNABA_VERBOSE};
+}
 sub _inf { print _color("1;32", "[INFO]") . " @_\n" if $ENV{VERBOSE} }
 sub _wrn { print STDERR _color("1;33", "[WARN]") . " @_\n" }
 sub _err { print STDERR _color("1;31", "[ERROR]") . " @_\n" }
@@ -43,7 +47,10 @@ sub unveil {
 }
 
 sub unveil_lock {
-	unless ($^O eq 'openbsd') { _dbg "unveil_lock: not on OpenBSD"; return }
+	unless ($^O eq 'openbsd') {
+		_dbg "unveil_lock: not on OpenBSD";
+		return;
+	}
 	return if $UNVEIL_LOCKED;
 	require OpenBSD::Unveil;
 	OpenBSD::Unveil::unveil();
