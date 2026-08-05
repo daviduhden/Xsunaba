@@ -5,12 +5,14 @@ package Xsunaba;
 use strict;
 use warnings;
 use File::Basename;
+use File::Temp qw(tempfile);
+use Exporter qw(import);
+use Fcntl qw(O_CREAT O_RDWR LOCK_EX LOCK_NB);
 
-our @ISA         = qw(Exporter);
 our @EXPORT_OK   = qw(pledge unveil unveil_lock sandbox launch);
 our %EXPORT_TAGS = ( all => \@EXPORT_OK );
 
-our $PLEGE_PROMISES =
+our $PLEDGE_PROMISES =
   'stdio rpath wpath cpath fattr proc exec' . ' inet dns unix tty';
 
 my $UNVEIL_LOCKED = 0;
@@ -30,38 +32,59 @@ sub _err { print STDERR _color( "1;31", "[ERROR]" ) . " @_\n" }
 
 sub pledge {
     my ($promises) = @_;
-    $promises //= $PLEGE_PROMISES;
-    unless ( $^O eq 'openbsd' ) { _dbg "pledge: not on OpenBSD"; return }
+    $promises //= $PLEDGE_PROMISES;
+    unless ( $^O eq 'openbsd' ) { _dbg "pledge: not on OpenBSD"; return 1 }
     require OpenBSD::Pledge;
-    OpenBSD::Pledge::pledge($promises)
-      or _wrn "pledge($promises): $!";
+    my @promises = grep { length } split /\s+/, $promises;
+    return 1 unless @promises;
+    return OpenBSD::Pledge::pledge(@promises);
 }
 
 sub unveil {
     my ( $path, $perm ) = @_;
     $perm //= 'r';
-    unless ( $^O eq 'openbsd' ) { _dbg "unveil: not on OpenBSD"; return }
-    return _dbg("unveil($path): already locked") if $UNVEIL_LOCKED;
+    unless ( $^O eq 'openbsd' ) { _dbg "unveil: not on OpenBSD"; return 1 }
+    if ($UNVEIL_LOCKED) {
+        _wrn "unveil($path): already locked";
+        return;
+    }
+    # Preload both XS modules before the filesystem view can be locked, so a
+    # later low-level pledge() call does not need to resolve module files.
+    require OpenBSD::Pledge;
     require OpenBSD::Unveil;
-    OpenBSD::Unveil::unveil( $path, $perm );
+    return OpenBSD::Unveil::unveil( $path, $perm );
 }
 
 sub unveil_lock {
     unless ( $^O eq 'openbsd' ) {
         _dbg "unveil_lock: not on OpenBSD";
-        return;
+        return 1;
     }
-    return if $UNVEIL_LOCKED;
+    return 1 if $UNVEIL_LOCKED;
+    require OpenBSD::Pledge;
     require OpenBSD::Unveil;
-    OpenBSD::Unveil::unveil();
+    return unless OpenBSD::Unveil::unveil();
     $UNVEIL_LOCKED = 1;
+    return 1;
 }
 
 sub sandbox {
     my %opts = @_;
+    my $sandbox_app = $opts{app} or die "No application specified";
 
-    $PLEGE_PROMISES = $ENV{XSUNABA_PLEDGE}
-      if exists $ENV{XSUNABA_PLEDGE};
+    if (
+        ( exists $opts{pledge} && defined $opts{pledge}
+            && $opts{pledge} ne '' )
+        || ( exists $ENV{XSUNABA_PLEDGE}
+            && $ENV{XSUNABA_PLEDGE} ne '' )
+      ) {
+        die "XSUNABA_PLEDGE cannot restrict an exec'd program; "
+          . "OpenBSD::Pledge does not expose execpromises";
+    }
+
+    if ( $^O eq 'openbsd' ) {
+        require OpenBSD::Unveil;
+    }
 
     my @unveil_entries;
     if ( exists $opts{unveil} ) {
@@ -75,27 +98,43 @@ sub sandbox {
     for my $entry (@unveil_entries) {
         next unless $entry;
         my ( $path, $perm ) = split /:/, $entry, 2;
-        unveil( $path, $perm // 'r' );
+        unveil( $path, $perm // 'r' )
+          or die "unveil($path): $!";
     }
 
-    unveil_lock() if @unveil_entries && !exists $opts{lock};
+    if ( @unveil_entries && ( !exists $opts{lock} || $opts{lock} ) ) {
+        unveil_lock() or die "unveil lock: $!";
+    }
 
-    my $pstr = exists $opts{pledge} ? $opts{pledge} : $PLEGE_PROMISES;
-    pledge($pstr) if defined $pstr && $pstr ne '';
-
-    return unless $opts{app};
     my @args = @{ $opts{args} // [] };
-    exec $opts{app}, @args or die "exec: $!";
+    exec { $sandbox_app } $sandbox_app, @args;
+    die "exec $sandbox_app: $!";
 }
 
 sub launch {
     my %opts = @_;
 
+    if (
+        ( exists $opts{pledge} && defined $opts{pledge}
+            && $opts{pledge} ne '' )
+        || ( exists $ENV{XSUNABA_PLEDGE}
+            && $ENV{XSUNABA_PLEDGE} ne '' )
+      ) {
+        die "XSUNABA_PLEDGE cannot restrict an exec'd program; "
+          . "OpenBSD::Pledge does not expose execpromises";
+    }
+
+    if ( $^O eq 'openbsd' ) {
+        require OpenBSD::Unveil;
+    }
+
     my $display  = $opts{display} // $ENV{XSUNABA_DISPLAY} // ':32';
     my $width    = $opts{width}   // $ENV{WIDTH}           // 1024;
     my $height   = $opts{height}  // $ENV{HEIGHT}          // 768;
-    my $home     = $ENV{HOME} or die "HOME not set";
-    my $xauth_f  = "$home/.Xauthority-xsunaba";
+    $ENV{HOME} or die "HOME not set";
+    $ENV{DISPLAY} or die "DISPLAY not set";
+    $width =~ /\A[1-9][0-9]*\z/ or die "Invalid width '$width'";
+    $height =~ /\A[1-9][0-9]*\z/ or die "Invalid height '$height'";
     my $sockets  = "/tmp/.X11-unix";
     my $app      = $opts{app} or die "No application specified";
     my @app_args = @{ $opts{args} // [] };
@@ -104,63 +143,82 @@ sub launch {
     my $xauth   = '/usr/X11R6/bin/xauth';
     my $xephyr  = '/usr/X11R6/bin/Xephyr';
 
-    my $full_app = join( " ", $app, @app_args );
-
-    # --- Launcher unveil (not locked: child will extend + lock) ---
-    if ( $^O eq 'openbsd' ) {
-        eval {
-            require OpenBSD::Unveil;
-            OpenBSD::Unveil::unveil( $_, 'rx' )
-              for ( $openssl, $xauth, $xephyr, '/bin/sh' );
-            OpenBSD::Unveil::unveil( $_, 'r' )
-              for ( '/etc', '/dev' );
-            OpenBSD::Unveil::unveil( $_, 'rwc' )
-              for ( $home, '/tmp', $sockets );
-        };
-    }
-
     # --- Generate cookie ---
-    my $cookie = `$openssl rand -hex 16`;
+    open my $cookie_fh, '-|', $openssl, 'rand', '-hex', '16'
+      or die "openssl: $!";
+    my $cookie = <$cookie_fh> // '';
+    close $cookie_fh or die "openssl rand failed";
     chomp $cookie;
+    $cookie =~ /\A[[:xdigit:]]{32}\z/
+      or die "openssl returned an invalid X11 cookie";
 
     # --- Find unused display ---
-    for my $i ( 32 .. 99 ) {
-        if ( !-e "$sockets/X$i" ) {
+    $display =~ /\A:(\d+)\z/
+      or die "Invalid display '$display' (expected :number)";
+    my $start_display = $1;
+    my $found_display;
+    my $display_lock_fh;
+    for my $i ( $start_display .. 99 ) {
+        next if -e "$sockets/X$i";
+        my $lock_path = "/tmp/.Xsunaba-display-$<-$i.lock";
+        sysopen( my $candidate_lock, $lock_path, O_CREAT | O_RDWR, 0600 )
+          or next;
+        if ( flock( $candidate_lock, LOCK_EX | LOCK_NB )
+            && !-e "$sockets/X$i" ) {
             $display = ":$i";
+            $found_display = 1;
+            $display_lock_fh = $candidate_lock;
             last;
         }
+        close $candidate_lock;
     }
+    die "No free X display from :$start_display through :99"
+      unless $found_display;
     _inf "using display $display";
+
+    my ( $xauth_fh, $xauth_f ) =
+      tempfile( 'Xsunaba-xauth-XXXXXX', DIR => '/tmp', UNLINK => 0 );
+    close $xauth_fh or die "close $xauth_f: $!";
 
     # --- Geometry hacks for known browsers ---
     my $base = basename($app);
     if ( $base eq 'chrome' ) {
-        $full_app .= " -window-size=${width},${height} --window-position=0,0";
+        push @app_args, "--window-size=${width},${height}",
+          '--window-position=0,0';
     }
     elsif ( $base eq 'firefox' ) {
-        $full_app .= " -width $width -height $height";
+        push @app_args, '-width', $width, '-height', $height;
     }
 
     # --- Add auth cookie for the Xephyr display ---
-    system("$xauth -f $xauth_f add $display . $cookie") == 0
-      or do { _err "failed to add auth cookie"; return; };
+    system( $xauth, '-f', $xauth_f, 'add', $display, '.', $cookie ) == 0
+      or do {
+        unlink $xauth_f;
+        die "xauth failed to add the cookie";
+      };
 
     # --- Start Xephyr ---
     my $xephyr_pid = fork();
-    die "fork: $!" unless defined $xephyr_pid;
+    unless ( defined $xephyr_pid ) {
+        unlink $xauth_f;
+        die "fork: $!";
+    }
 
     if ( $xephyr_pid == 0 ) {
-        $ENV{DISPLAY} = '';
-        exec(   "$xephyr -auth $xauth_f -screen ${width}x${height}"
-              . " -br -nolisten tcp $display" );
+        exec $xephyr, '-auth', $xauth_f, '-screen', "${width}x${height}",
+          '-br', '-nolisten', 'tcp', $display;
         die "exec Xephyr: $!";
     }
 
     _inf "Xephyr started (PID $xephyr_pid)";
     sleep 3;
 
-    kill( 0, $xephyr_pid )
-      or do { _err "Xephyr failed to start"; return; };
+    unless ( kill( 0, $xephyr_pid ) ) {
+        waitpid( $xephyr_pid, 0 );
+        unlink $xauth_f or _wrn "cannot remove $xauth_f: $!";
+        _err "Xephyr failed to start";
+        return 1;
+    }
 
     # --- User-configured unveil entries for the app ---
     my @app_unveil;
@@ -172,56 +230,44 @@ sub launch {
         @app_unveil = split /\s*,\s*/, $ENV{XSUNABA_UNVEIL};
     }
 
-    my $app_pledge = $opts{pledge} // $ENV{XSUNABA_PLEDGE} // $PLEGE_PROMISES;
-
     # --- Launch the application ---
     my $app_pid = fork();
-    die "fork: $!" unless defined $app_pid;
+    unless ( defined $app_pid ) {
+        kill 'TERM', $xephyr_pid;
+        waitpid( $xephyr_pid, 0 );
+        unlink $xauth_f;
+        die "fork: $!";
+    }
 
     if ( $app_pid == 0 ) {
         $ENV{DISPLAY} = $display;
+        $ENV{XAUTHORITY} = $xauth_f;
 
-        if ( $^O eq 'openbsd' ) {
-            eval {
-                require OpenBSD::Unveil;
-                require OpenBSD::Pledge;
-
-                # Child inherits parent's unveiled paths.
-                # Add app-specific paths and lock.
-                for my $entry (@app_unveil) {
-                    next unless $entry;
-                    my ( $path, $perm ) = split /:/, $entry, 2;
-                    OpenBSD::Unveil::unveil( $path, $perm // 'r' );
-                }
-
-                # Ensure X11 socket + devices reachable
-                OpenBSD::Unveil::unveil( $sockets, 'rwc' );
-                OpenBSD::Unveil::unveil( '/dev',   'r' );
-
-                OpenBSD::Unveil::unveil();
-
-                OpenBSD::Pledge::pledge($app_pledge)
-                  or die "pledge: $!";
-            };
+        if ( $^O eq 'openbsd' && @app_unveil ) {
+            require OpenBSD::Unveil;
+            for my $entry (@app_unveil) {
+                next unless $entry;
+                my ( $path, $perm ) = split /:/, $entry, 2;
+                OpenBSD::Unveil::unveil( $path, $perm // 'r' )
+                  or die "unveil($path): $!";
+            }
+            OpenBSD::Unveil::unveil( $sockets, 'rw' )
+              or die "unveil($sockets): $!";
+            OpenBSD::Unveil::unveil( $xauth_f, 'r' )
+              or die "unveil($xauth_f): $!";
+            OpenBSD::Unveil::unveil()
+              or die "unveil lock: $!";
         }
 
-        exec($full_app);
+        exec { $app } $app, @app_args;
         die "exec $app: $!";
     }
 
     _inf "launched '$app' (PID $app_pid)";
 
-    # --- Pledge the launcher's own remaining surface ---
-    if ( $^O eq 'openbsd' ) {
-        eval {
-            require OpenBSD::Pledge;
-            OpenBSD::Pledge::pledge('stdio rpath wpath cpath fattr proc exec')
-              or _wrn "launcher pledge: $!";
-        };
-    }
-
     # --- Wait for the application to exit ---
     waitpid( $app_pid, 0 );
+    my $app_status = $?;
 
     # --- Stop Xephyr ---
     _inf "stopping Xephyr (PID $xephyr_pid)";
@@ -230,10 +276,13 @@ sub launch {
         sleep 1;
         kill( 'KILL', $xephyr_pid ) if kill( 0, $xephyr_pid );
     }
+    waitpid( $xephyr_pid, 0 );
 
-    # --- Remove auth cookies ---
-    system("$xauth -f $xauth_f remove $display");
+    unlink $xauth_f or _wrn "cannot remove $xauth_f: $!";
     _inf "cleanup complete";
+    return 1 if $app_status == -1;
+    return 128 + ( $app_status & 127 ) if $app_status & 127;
+    return $app_status >> 8;
 }
 
 package main;
@@ -243,7 +292,7 @@ unless (caller) {
 
     @ARGV or die "Usage: Xsunaba [command args...]\n";
 
-    Xsunaba::launch(
+    exit Xsunaba::launch(
         app  => $ARGV[0],
         args => [ @ARGV[ 1 .. $#ARGV ] ],
     );
