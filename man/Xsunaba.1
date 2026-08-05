@@ -1,9 +1,9 @@
-.Dd $Mdocdate: August 1 2026 $
+.Dd $Mdocdate: August 5 2026 $
 .Dt XSUNABA 1
 .Os
 .Sh NAME
 .Nm Xsunaba
-.Nd sandbox X11 applications with Xephyr, pledge, and unveil
+.Nd isolate X11 applications with Xephyr and unveil
 .Sh SYNOPSIS
 .Nm
 .Op Ar command Op Ar argument ...
@@ -11,23 +11,20 @@
 The
 .Nm
 utility provides a two-layer sandbox for running X11 GUI applications
-on OpenBSD:
+on
+.Ox :
 .Bl -enum -compact -offset indent
 .It
 Display isolation via a nested
 .Xr Xephyr 1
-X server, which prevents the application from reading
-.Xr XEvents 3
+X server, which prevents the application from reading X events
 (keystrokes, mouse input, clipboard) intended for other windows in the
 parent X session.
 .It
-Process restriction via
-.Xr pledge 2
-and
+Filesystem restriction via
 .Xr unveil 2 ,
-which limit the system calls and filesystem access available to the
-application process.
-Both are configured through environment variables.
+which limits the filesystem paths available to the application process.
+This layer is configured through an environment variable.
 .El
 .Pp
 When invoked from the command line,
@@ -37,29 +34,34 @@ starts Xephyr on an unused display (default
 \-
 .Ql :99 ) ,
 generates an X11 magic cookie for authentication, forks the target
-application with user-specified pledge and unveil restrictions, waits
+application with user-specified unveil restrictions, waits
 for it to exit, then stops Xephyr and cleans up the authentication
 cookie.
 .Pp
 .Nm
 can also be loaded as a Perl module via
 .Cm require
-to incorporate pledge/unveil functionality into custom scripts,
+to incorporate pledge or unveil functionality into custom scripts,
 either with or without the Xephyr display layer.
+.Pp
+The
+.Xr OpenBSD::Pledge 3p
+interface used by this Perl implementation configures only the current
+process and does not expose the
+.Fa execpromises
+argument of
+.Xr pledge 2 .
+An executed program would therefore start without those restrictions.
+.Nm
+does not claim to pledge arbitrary target applications and rejects a
+non-empty legacy
+.Ev XSUNABA_PLEDGE
+setting.
+The low-level
+.Fn pledge
+module function remains available for restricting Perl code itself.
 .Sh ENVIRONMENT
 .Bl -tag -width "XSUNABA_UNVEIL"
-.It Ev XSUNABA_PLEDGE
-Space-separated list of pledge promises applied to the sandboxed
-application immediately before
-.Xr exec 3 .
-.Pp
-Default:
-.Ql stdio rpath wpath cpath fattr proc exec inet dns unix tty .
-.Pp
-Set to an empty string to disable pledge for the application.
-See
-.Xr pledge 2
-for the full set of available promises.
 .It Ev XSUNABA_UNVEIL
 Comma-separated list of
 .Ar path : Ar perm
@@ -70,7 +72,8 @@ for the sandboxed application.
 When unset, the application inherits the launcher's filesystem view
 and no additional unveil restrictions are applied (the filesystem is
 fully visible).
-When set, only the listed paths are accessible after unveil is locked;
+When set, only the listed paths, the private X authority file, and the
+X11 socket directory are accessible after unveil is locked;
 all other paths become invisible.
 .Pp
 Permission codes are single-letter abbreviations that may be combined:
@@ -93,16 +96,15 @@ Read, write, execute, and create (full access).
 Example:
 .Ql /usr/X11R6/bin/xterm:rx,/tmp:rwc,/etc:r,/dev:r .
 .Pp
-The
+The private X authority file and
 .Pa /tmp/.X11-unix
-socket directory and
-.Pa /dev
-are always unveiled for the application with
-.Ql rwc
-and
+socket directory are additionally unveiled with
 .Ql r
-respectively, so they do not need to be listed unless you wish to
-change their permissions.
+and
+.Ql rw ,
+respectively.
+.Pa /dev
+is not exposed automatically; list only the devices the application needs.
 .It Ev XSUNABA_DISPLAY
 Starting X display number for
 .Xr Xephyr 1 .
@@ -124,25 +126,30 @@ display height in pixels.
 Default:
 .Ql 768 .
 .It Ev VERBOSE
-When set to any true value, emits diagnostic messages to standard
-error during setup, application launch, and cleanup.
-Each message is prefixed with
-.Ql [Xsunaba] .
+When set to a non-empty value, emits informational messages to standard
+output during setup, application launch, and cleanup.
+Debug messages are written to standard error.
 .El
 .Sh FILES
-.Bl -tag -width "$HOME/.Xauthority-xsunaba"
-.It Pa $HOME/.Xauthority-xsunaba
-Temporary X authority file created for the Xephyr session.
+.Bl -tag -width "/tmp/Xsunaba-xauth-XXXXXX"
+.It Pa /tmp/Xsunaba-xauth-XXXXXX
+Unique mode-0600 temporary X authority file created for each Xephyr session.
 Contains the magic cookie used to authenticate the application
 connection.
-Removed during cleanup.
+Its path is passed to the application in
+.Ev XAUTHORITY
+and it is removed during normal cleanup.
 .It Pa /tmp/.X11-unix/
 Directory scanned for existing X11 sockets to find a free display
 number.
+.It Pa /tmp/.Xsunaba-display-UID-N.lock
+Per-user advisory lock used to serialize concurrent allocation of display
+number
+.Ar N .
 .It Pa /usr/bin/openssl
 Used to generate the X11 magic cookie (128-bit random hex string).
 .It Pa /usr/X11R6/bin/xauth
-Used to add and remove X11 authentication cookies.
+Used to add the X11 authentication cookie.
 .It Pa /usr/X11R6/bin/Xephyr
 The nested X server executable.
 .El
@@ -152,10 +159,9 @@ The nested X server executable.
 If no command is provided, the usage message is printed to standard
 error and the exit status is 255.
 .Sh EXAMPLES
-Launch Firefox with filesystem restrictions and a tighter pledge:
+Launch Firefox with filesystem restrictions:
 .Bd -literal -offset indent
-$ XSUNABA_UNVEIL="/usr/X11R6/bin/firefox:rx,/tmp:rwc,/etc:r" \e
-  XSUNABA_PLEDGE="stdio rpath wpath cpath proc exec inet dns unix tty" \e
+$ XSUNABA_UNVEIL="/usr/local/bin/firefox:rx,/usr/local/lib/firefox:rx,/tmp:rwc,/etc:r" \e
   Xsunaba firefox --private-window
 .Ed
 .Pp
@@ -178,33 +184,28 @@ Xsunaba::sandbox(
         '/tmp:rwc',
         '/etc:r',
     ],
-    pledge => 'stdio rpath wpath cpath inet dns unix tty',
 );
 .Ed
 .Pp
-Use the low-level API for maximum control:
+Use the low-level API to restrict the current Perl process:
 .Bd -literal -offset indent
 #!/usr/bin/perl
 require '/usr/local/bin/Xsunaba';
 
-Xsunaba::unveil('/usr/X11R6/bin/firefox',  'rx');
-Xsunaba::unveil("$ENV{HOME}/.mozilla",     'rwc');
-Xsunaba::unveil('/tmp',                     'rwc');
-Xsunaba::unveil('/etc',                     'r');
-Xsunaba::unveil('/usr/local/lib',           'rx');
-Xsunaba::unveil('/usr/lib',                 'rx');
+Xsunaba::unveil('/usr/share/dict/words', 'r');
 Xsunaba::unveil_lock();
-Xsunaba::pledge('stdio rpath wpath cpath proc exec inet dns unix tty');
+Xsunaba::pledge('stdio rpath');
 
-exec 'firefox', '--private-window' or die "exec: $!";
+open my $fh, '<', '/usr/share/dict/words' or die "open: $!";
+print while <$fh>;
 .Ed
 .Pp
-Override the default pledge promises:
+Override the default promises for the low-level helper:
 .Bd -literal -offset indent
 #!/usr/bin/perl
 require '/usr/local/bin/Xsunaba';
-$Xsunaba::PLEGE_PROMISES = 'stdio rpath inet dns';
-Xsunaba::sandbox(app => 'curl', args => ['-O', 'https://example.com']);
+$Xsunaba::PLEDGE_PROMISES = 'stdio rpath inet dns';
+Xsunaba::pledge();
 .Ed
 .Pp
 Launch a sandbox on a custom display with custom geometry:
@@ -214,7 +215,7 @@ $ XSUNABA_DISPLAY=":40" WIDTH=1280 HEIGHT=900 Xsunaba gimp
 .Sh DIAGNOSTICS
 Set
 .Ev VERBOSE
-to any true value to see diagnostic messages on standard error:
+to a non-empty value to see informational messages:
 .Bd -literal -offset indent
 [INFO] using display :32
 [INFO] Xephyr started (PID 12345)
@@ -223,11 +224,14 @@ to any true value to see diagnostic messages on standard error:
 [INFO] cleanup complete
 .Ed
 .Pp
-Warnings (always printed) indicate non-fatal issues such as a failed
-pledge call on a non-OpenBSD system.
+Warnings are always printed; pledge helper and unveil failures on
+.Ox
+are fatal.
 Errors (always printed) indicate fatal conditions such as
 .Ev HOME
-not being set or Xephyr failing to start.
+or the host
+.Ev DISPLAY
+not being set, invalid geometry, or Xephyr failing to start.
 .Sh MODULE API
 .Nm
 may be loaded as a Perl module using
@@ -248,9 +252,10 @@ If
 is
 .Dv undef
 or omitted, the package variable
-.Va $Xsunaba::PLEGE_PROMISES
+.Va $Xsunaba::PLEDGE_PROMISES
 is used as the default.
-No-op on systems other than OpenBSD.
+No-op on systems other than
+.Ox .
 .It Fn unveil $path $perm
 Invoke
 .Xr unveil 2
@@ -262,7 +267,9 @@ with permission
 .Ql r ) .
 Must be called before
 .Fn unveil_lock .
-No-op on systems other than OpenBSD, or if unveil is already locked.
+No-op on systems other than
+.Ox ,
+or if unveil is already locked.
 .It Fn unveil_lock
 Lock the unveil configuration by calling
 .Fn unveil
@@ -273,9 +280,10 @@ After this call, the filesystem is restricted to the set of paths
 announced with
 .Fn unveil ,
 and no further unveil calls are permitted.
-No-op on systems other than OpenBSD.
+No-op on systems other than
+.Ox .
 .It Fn sandbox %opts
-Convenience wrapper that applies unveil and pledge, then
+Convenience wrapper that applies unveil, then
 .Xr exec 3 Ns s
 the application directly (no
 .Xr Xephyr 1 ) .
@@ -285,9 +293,6 @@ Accepts the following keys:
 Executable to run (required).
 .It Cm args
 Array reference of command-line arguments.
-.It Cm pledge
-Promise string (defaults to
-.Va $Xsunaba::PLEGE_PROMISES ) .
 .It Cm unveil
 Array reference of
 .Ql path:perm
@@ -303,7 +308,7 @@ entries exist.
 .It Fn launch %opts
 Full sandbox launcher: starts
 .Xr Xephyr 1 ,
-forks the application with pledge and unveil, waits for the
+forks the application with optional unveil restrictions, waits for the
 application to exit, then stops Xephyr and removes the X11
 authentication cookie.
 Accepts the following keys:
@@ -321,8 +326,6 @@ Xephyr width in pixels (default
 .It Cm height
 Xephyr height in pixels (default
 .Ql 768 ) .
-.It Cm pledge
-Promise string for the application.
 .It Cm unveil
 Array reference of
 .Ql path:perm
@@ -330,18 +333,16 @@ strings.
 .El
 .El
 .Ss Package variables
-.Bl -tag -width "PLEGE_PROMISES"
-.It Va $Xsunaba::PLEGE_PROMISES
+.Bl -tag -width "PLEDGE_PROMISES"
+.It Va $Xsunaba::PLEDGE_PROMISES
 Default pledge promise string used by
-.Fn pledge ,
-.Fn sandbox ,
-and
-.Fn launch
+.Fn pledge
 when no explicit promise string is provided.
 Default:
 .Ql stdio rpath wpath cpath fattr proc exec inet dns unix tty .
-Set this variable before calling any sandbox function to override the
-default for the entire script.
+Set this variable before calling
+.Fn pledge
+to override its default.
 .El
 .Sh SEE ALSO
 .Xr openssl 1 ,
@@ -351,14 +352,15 @@ default for the entire script.
 .Xr pledge 2 ,
 .Xr unveil 2 ,
 .Xr exec 3 ,
-.Xr XEvents 3 ,
 .Xr X 7
 .Sh HISTORY
 .Nm
 is based on a script by
 .An Milosz Galazka
 .Pq circa 2013
-and was ported to OpenBSD and
+and was ported to
+.Ox
+and
 .Xr doas 1
 by
 .An Morgan Aldridge
@@ -366,16 +368,13 @@ by
 .An David Uhden Collado
 rewrote it in Perl
 .Pq 2025
-and refactored it into a pledge/unveil variable wrapper with Xephyr
-display isolation
+and added unveil integration with Xephyr display isolation
 .Pq 2026 .
 .Sh CAVEATS
 .Bl -bullet
 .It
-Xephyr uses software rendering
-.Pq LLVMpipe .
-2D performance is acceptable; 3D performance is poor and unsuitable
-for games or GPU-intensive applications.
+Xephyr graphics acceleration depends on the X server build and host
+configuration; a specific renderer must not be assumed.
 .It
 There is no window manager inside the Xephyr display.
 Applications run full-screen at the configured resolution.
@@ -385,7 +384,8 @@ and pass that script as the command.
 .Nm
 does not create a separate user account or use
 .Xr doas 1 .
-The application runs as your user, restricted by pledge and unveil.
+The application runs as your user, with only the configured unveil
+filesystem restriction.
 For additional user-based isolation, wrap the application with
 .Xr doas 1
 yourself or use the pre-2026 version of
@@ -396,5 +396,7 @@ which included user sandboxing.
 is a mitigation, not a guarantee.
 A determined attacker who compromises the application may still find
 ways to escape the sandbox.
-Combine it with other OpenBSD security practices.
+Combine it with other
+.Ox
+security practices.
 .El
