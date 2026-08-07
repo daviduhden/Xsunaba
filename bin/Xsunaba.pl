@@ -192,11 +192,11 @@ sub launch {
 
     # --- Geometry hacks for known browsers ---
     my $base = basename($app);
-    if ( $base eq 'chrome' ) {
+    if ( $base =~ /(?:^|-)chrome$/ || $base =~ /chromium/ ) {
         push @app_args, "--window-size=${width},${height}",
           '--window-position=0,0';
     }
-    elsif ( $base eq 'firefox' ) {
+    elsif ( $base =~ /firefox/ ) {
         push @app_args, '-width', $width, '-height', $height;
     }
 
