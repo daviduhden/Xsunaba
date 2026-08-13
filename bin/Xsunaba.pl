@@ -17,18 +17,13 @@ our $PLEDGE_PROMISES =
 
 my $UNVEIL_LOCKED = 0;
 
-sub _color {
-    my ( $code, $msg ) = @_;
-    ( -t STDOUT ) ? "\e[${code}m${msg}\e[0m" : $msg;
-}
-
 sub _dbg {
     warn "[Xsunaba] @_\n"
       if $ENV{VERBOSE} || $ENV{XSUNABA_VERBOSE};
 }
-sub _inf { print _color( "1;32", "[INFO]" ) . " @_\n" if $ENV{VERBOSE} }
-sub _wrn { print STDERR _color( "1;33", "[WARN]" ) . " @_\n" }
-sub _err { print STDERR _color( "1;31", "[ERROR]" ) . " @_\n" }
+sub _inf { print "[INFO] @_\n" if $ENV{VERBOSE} }
+sub _wrn { print STDERR "[WARN] @_\n" }
+sub _err { print STDERR "[ERROR] @_\n" }
 
 sub pledge {
     my ($promises) = @_;
