@@ -1,0 +1,847 @@
+#!/usr/bin/perl -T
+
+#
+# xsunaba-helper - privileged session launcher for Xsunaba
+#
+# Runs as root via a narrowly scoped doas.conf rule (see README.md).
+# Creates one isolated Xephyr session and runs one application under
+# dedicated, non-login Unix accounts.
+#
+# The caller may only provide:
+#   - the parent (real) display and its Xauthority file,
+#   - a starting display number, window geometry and optional unveil
+#     entries,
+#   - the application command line to run.
+#
+# The helper selects the actual nested display, creates the session
+# directory, generates the authentication material, drops to the
+# dedicated UIDs and performs all cleanup. No environment variable,
+# session directory, socket pathname or Xauthority file may be
+# injected by the caller.
+#
+# MIT License
+#
+# Copyright (c) 2026 The Xsunaba contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files (the
+# "Software"), to deal in the Software without restriction, including
+# without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so, subject
+# to the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+# BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+# ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+# CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+package Xsunaba::Helper;
+
+use strict;
+use warnings;
+use Exporter   qw(import);
+use Fcntl      qw(O_CREAT O_EXCL O_RDONLY O_RDWR O_WRONLY :flock
+                  S_IFMT S_IFSOCK);
+use File::Path qw(remove_tree);
+use POSIX      qw(_exit WNOHANG getegid geteuid getgid getgroups getgrnam
+                  getpwnam getuid setgid setuid);
+use Sys::Hostname qw(hostname);
+
+our @EXPORT_OK = qw(
+  parse_args find_free_display socket_path xauth_record_bytes
+  write_xauth_file parse_xauth_bytes read_xauth_file
+  extract_parent_auth parent_display_number xauth_records_for
+  gen_cookie build_app_env build_xephyr_env build_unveil_entries
+  make_session_dir path_exists exit_status _passthrough
+);
+our %EXPORT_TAGS = ( all => \@EXPORT_OK );
+
+use constant FAMILY_LOCAL => 256;    # FamilyLocal
+use constant FAMILY_WILD  => 65535;  # FamilyWild
+
+# Fixed paths and account names. The helper refuses to proceed if the
+# accounts do not exist with the expected relationship.
+our $RUN_DIR       = '/var/run/xsunaba';
+our $SOCKET_DIR    = '/tmp/.X11-unix';
+our $XEPHYR_BIN    = '/usr/X11R6/bin/Xephyr';
+our $XEPHYR_USER   = '_xsunaba_xephyr';
+our $APP_USER      = '_xsunaba_app';
+our $APP_GROUP     = '_xsunaba';
+our $APP_PATH      = '/usr/local/bin:/usr/X11R6/bin:/usr/bin:/bin';
+our $MINIMAL_PATH  = '/usr/X11R6/bin:/usr/bin:/bin';
+our $MAX_DISPLAY   = 999;
+our $SOCKET_MODE   = 0660;
+our $MAX_AUTH_LEN  = 4096;
+our $MAX_XAUTH     = 1048576;  # 1 MiB
+our $COOKIE_LEN    = 16;
+our $VERBOSE       = 0;
+
+our @PASSTHROUGH_ENV = qw(TERM TZ LANG LC_ALL LC_CTYPE LC_MESSAGES);
+
+sub _inf { print "[INFO] @_\n" if $VERBOSE }
+sub _wrn { print STDERR "[WARN] @_\n" }
+sub _err { print STDERR "[ERROR] @_\n" }
+
+sub _untaint {
+    my ($value, $what) = @_;
+    defined $value or die "missing $what";
+    die "$what contains a NUL byte" if $value =~ /\0/;
+    my ($clean) = $value =~ /\A(.*)\z/s;
+    return $clean;
+}
+
+#
+# Argument parsing. Returns a hash reference or dies with a
+# descriptive error. Nothing from the environment is consulted.
+#
+sub parse_args {
+    my (@argv) = @_;
+    my %o = ( verbose => 0 );
+
+    my $usage = sub {
+        die "usage: xsunaba-helper --parent-display :N "
+          . "--parent-xauth FILE [--display N] [--width N] "
+          . "[--height N] [--unveil PATH:PERM,...] [--verbose] "
+          . "-- APP [ARGS...]\n";
+    };
+
+    my $need = sub {
+        my ($name, $value) = @_;
+        $usage->() unless defined $value && length $value;
+        return $value;
+    };
+
+    my $i = 0;
+    while ( $i < @argv ) {
+        my $a = $argv[$i];
+        last if $a eq '--';
+        if    ( $a eq '--parent-display' ) {
+            $o{parent_display} = $need->( $a, $argv[ ++$i ] );
+        }
+        elsif ( $a eq '--parent-xauth' ) {
+            $o{parent_xauth} = $need->( $a, $argv[ ++$i ] );
+        }
+        elsif ( $a eq '--display' ) {
+            $o{display} = $need->( $a, $argv[ ++$i ] );
+        }
+        elsif ( $a eq '--width' ) {
+            $o{width} = $need->( $a, $argv[ ++$i ] );
+        }
+        elsif ( $a eq '--height' ) {
+            $o{height} = $need->( $a, $argv[ ++$i ] );
+        }
+        elsif ( $a eq '--unveil' ) {
+            $o{unveil} = $need->( $a, $argv[ ++$i ] );
+        }
+        elsif ( $a eq '--verbose' ) { $o{verbose} = 1 }
+        else { $usage->() }
+        $i++;
+    }
+    $usage->() unless $i < @argv && $argv[$i] eq '--';
+    my @app = @argv[ $i + 1 .. $#argv ];
+    die "no application specified\n" unless @app;
+    die "too many application arguments\n" if @app > 256;
+
+    my ($pd) = $o{parent_display} =~ /\A(:[0-9]{1,4}(?:\.[0-9]{1,4})?)\z/
+      or die "invalid parent display '$o{parent_display}'\n";
+    $o{parent_display} = $pd;
+
+    my $px = _untaint( $o{parent_xauth}, 'parent Xauthority path' );
+    die "parent Xauthority path must be absolute\n" unless $px =~ m{\A/};
+    die "parent Xauthority path too long\n" if length($px) > 4096;
+    $o{parent_xauth} = $px;
+
+    if ( exists $o{display} ) {
+        my ($n) = $o{display} =~ /\A([0-9]{1,3})\z/
+          or die "invalid display '$o{display}'\n";
+        die "display must be in 1..$MAX_DISPLAY\n"
+          unless $n >= 1 && $n <= $MAX_DISPLAY;
+        $o{display} = 0 + $n;
+    }
+    else { $o{display} = 32 }
+
+    for my $what (qw(width height)) {
+        $o{$what} //= $what eq 'width' ? 1024 : 768;
+        my ($n) = $o{$what} =~ /\A([0-9]{1,5})\z/
+          or die "invalid $what '$o{$what}'\n";
+        die "$what must be in 1..32767\n" unless $n >= 1 && $n <= 32767;
+        $o{$what} = $n;
+    }
+
+    if ( defined $o{unveil} && length $o{unveil} ) {
+        my @entries = split /,/, $o{unveil};
+        die "too many unveil entries\n" if @entries > 64;
+        my @clean;
+        for my $entry (@entries) {
+            my ( $path, $perm ) = $entry =~ /\A([^:]+):([rwxc]+)\z/
+              or die "invalid unveil entry '$entry'\n";
+            $path = _untaint( $path, 'unveil path' );
+            die "unveil path must be absolute\n" unless $path =~ m{\A/};
+            die "unveil path too long\n" if length($path) > 1024;
+            push @clean, "$path:$perm";
+        }
+        $o{unveil} = \@clean;
+    }
+    else { $o{unveil} = [] }
+
+    my $app = _untaint( shift @app, 'application path' );
+    die "application path must be absolute\n" unless $app =~ m{\A/};
+    die "application path too long\n" if length($app) > 4096;
+    my @args = map { _untaint( $_, 'application argument' ) } @app;
+    for my $arg (@args) {
+        die "application argument too long\n" if length($arg) > 4096;
+    }
+    $o{app}      = $app;
+    $o{app_args} = \@args;
+
+    $VERBOSE = $o{verbose};
+    return \%o;
+}
+
+sub socket_path {
+    my ($n) = @_;
+    return "$SOCKET_DIR/X$n";
+}
+
+sub path_exists {
+    my ($path) = @_;
+    return lstat($path) ? 1 : ( $!{ENOENT} ? 0 : die "lstat $path: $!" );
+}
+
+sub find_free_display {
+    my ( $start, $exists ) = @_;
+    for my $n ( $start .. $MAX_DISPLAY ) {
+        return $n unless $exists->($n);
+    }
+    return undef;
+}
+
+#
+# Xauthority record handling. MIT-MAGIC-COOKIE-1 cookies are never
+# passed on command lines; only through mode-0600 files owned by the
+# intended reader.
+#
+sub xauth_record_bytes {
+    my ($r) = @_;
+    die "authority record too long\n"
+      if length( $r->{address} ) > $MAX_AUTH_LEN
+      || length( $r->{number} ) > $MAX_AUTH_LEN
+      || length( $r->{name} ) > $MAX_AUTH_LEN
+      || length( $r->{data} ) > $MAX_AUTH_LEN;
+    return pack(
+        'n n a' . length( $r->{address} )
+          . ' n a' . length( $r->{number} )
+          . ' n a' . length( $r->{name} )
+          . ' n a' . length( $r->{data} ),
+        $r->{family}, length( $r->{address} ), $r->{address},
+        length( $r->{number} ),  $r->{number},
+        length( $r->{name} ),    $r->{name},
+        length( $r->{data} ),    $r->{data},
+    );
+}
+
+sub write_xauth_file {
+    my ( $path, $records ) = @_;
+    sysopen( my $fh, $path, O_CREAT | O_EXCL | O_WRONLY, 0600 )
+      or die "open $path: $!";
+    for my $r ( @{$records} ) {
+        my $bytes = xauth_record_bytes($r);
+        syswrite( $fh, $bytes ) == length($bytes)
+          or die "write $path: $!";
+    }
+    close $fh or die "close $path: $!";
+}
+
+sub parse_xauth_bytes {
+    my ($data) = @_;
+    my @records;
+    my $pos  = 0;
+    my $size = length $data;
+    while ( $pos < $size ) {
+        die "truncated Xauthority record\n" if $size - $pos < 6;
+        my ($family) = unpack( 'n', substr( $data, $pos, 2 ) );
+        $pos += 2;
+        my %r = ( family => $family );
+        for my $field (qw(address number name data)) {
+            die "truncated Xauthority $field length\n"
+              if $size - $pos < 2;
+            my ($len) = unpack( 'n', substr( $data, $pos, 2 ) );
+            $pos += 2;
+            die "Xauthority $field too long\n" if $len > $MAX_AUTH_LEN;
+            die "truncated Xauthority $field\n" if $size - $pos < $len;
+            $r{$field} = substr( $data, $pos, $len );
+            $pos += $len;
+        }
+        push @records, \%r;
+    }
+    return \@records;
+}
+
+sub read_xauth_file {
+    my ($path) = @_;
+    sysopen( my $fh, $path, O_RDONLY )
+      or die "open $path: $!";
+    my $data = '';
+    my $size = 0;
+    my $buf  = '';
+    while ( sysread( $fh, $buf, 4096 ) ) {
+        $size += length $buf;
+        die "$path exceeds size limit\n" if $size > $MAX_XAUTH;
+        $data .= $buf;
+    }
+    defined $buf or die "read $path: $!";
+    close $fh or die "close $path: $!";
+    return parse_xauth_bytes($data);
+}
+
+sub parent_display_number {
+    my ($display) = @_;
+    my ($n) = $display =~ /\A:([0-9]+)(?:\.[0-9]+)?\z/
+      or die "invalid display '$display'\n";
+    return $n;
+}
+
+sub extract_parent_auth {
+    my ( $records, $display ) = @_;
+    my $number = parent_display_number($display);
+    my @matched = grep {
+        $_->{number} eq $number
+          && $_->{name} eq 'MIT-MAGIC-COOKIE-1'
+    } @{$records};
+    for my $r (@matched) {
+        die "invalid MIT-MAGIC-COOKIE-1 length\n"
+          unless length( $r->{data} ) == $COOKIE_LEN;
+    }
+    return \@matched;
+}
+
+sub xauth_records_for {
+    my ( $host, $number, $cookie ) = @_;
+    my $data = pack( 'H*', $cookie );
+    return [
+        {
+            family  => FAMILY_LOCAL,
+            address => $host,
+            number  => $number,
+            name    => 'MIT-MAGIC-COOKIE-1',
+            data    => $data,
+        },
+        {
+            family  => FAMILY_WILD,
+            address => '',
+            number  => $number,
+            name    => 'MIT-MAGIC-COOKIE-1',
+            data    => $data,
+        },
+    ];
+}
+
+sub gen_cookie {
+    my ($fh) = @_;
+    my $buf = '';
+    if ($fh) {
+        sysread( $fh, $buf, $COOKIE_LEN ) == $COOKIE_LEN
+          or die "short read from random source\n";
+    }
+    else {
+        sysopen( my $rfh, '/dev/urandom', O_RDONLY )
+          or die "open /dev/urandom: $!";
+        sysread( $rfh, $buf, $COOKIE_LEN ) == $COOKIE_LEN
+          or die "short read from /dev/urandom\n";
+        close $rfh;
+    }
+    my ($hex) = unpack( 'H*', $buf ) =~ /\A([0-9a-f]{32})\z/
+      or die "invalid random data\n";
+    return $hex;
+}
+
+#
+# Sanitized environments. Built from scratch; nothing from the
+# invoking user's environment is inherited except an explicit
+# whitelist of harmless variables.
+#
+sub _passthrough {
+    my ($env) = @_;
+    my %copy;
+    for my $k (@PASSTHROUGH_ENV) {
+        $copy{$k} = $env->{$k} if defined $env->{$k} && length $env->{$k};
+    }
+    return \%copy;
+}
+
+sub build_app_env {
+    my (%s) = @_;
+    my $env = {
+        PATH            => $s{path} // $APP_PATH,
+        HOME            => $s{home},
+        USER            => $s{username},
+        LOGNAME         => $s{username},
+        SHELL           => $s{shell} // '/bin/ksh',
+        DISPLAY         => $s{display},
+        XAUTHORITY      => $s{xauthority},
+        XDG_RUNTIME_DIR => $s{runtime_dir},
+    };
+    for my $k (@PASSTHROUGH_ENV) {
+        $env->{$k} = $s{passthru}{$k} if defined $s{passthru}{$k};
+    }
+    return $env;
+}
+
+sub build_xephyr_env {
+    my (%s) = @_;
+    my $env = {
+        PATH       => $MINIMAL_PATH,
+        HOME       => $s{home},
+        DISPLAY    => $s{display},
+        XAUTHORITY => $s{xauthority},
+    };
+    for my $k (@PASSTHROUGH_ENV) {
+        $env->{$k} = $s{passthru}{$k} if defined $s{passthru}{$k};
+    }
+    return $env;
+}
+
+sub build_unveil_entries {
+    my (%s) = @_;
+    my @entries = @{ $s{user_entries} // [] };
+    push @entries, "$s{socket_path}:w";
+    push @entries, "$s{client_auth}:r";
+    push @entries, "$s{runtime_dir}:rwxc";
+    return \@entries;
+}
+
+sub make_session_dir {
+    for ( 1 .. 32 ) {
+        open my $fh, '<', '/dev/urandom' or die "open /dev/urandom: $!";
+        my $buf = '';
+        sysread( $fh, $buf, 16 ) == 16
+          or die "short read from /dev/urandom\n";
+        close $fh;
+        my ($name) = unpack( 'H*', $buf ) =~ /\A([0-9a-f]{32})\z/
+          or die "invalid random data\n";
+        my $path = "$RUN_DIR/$name";
+        if ( mkdir $path, 0700 ) {
+            chmod 0711, $path or die "chmod $path: $!";
+            return $path;
+        }
+        die "mkdir $path: $!" unless $!{EEXIST};
+    }
+    die "cannot create a session directory under $RUN_DIR\n";
+}
+
+sub exit_status {
+    my ($status) = @_;
+    return 1                           if $status == -1;
+    return 128 + ( $status & 127 )     if $status & 127;
+    return $status >> 8;
+}
+
+#
+# Privilege transition. Runs only as OpenBSD root. After this the
+# process can never regain any privilege; every step is verified.
+#
+sub drop_privs {
+    my ( $uid, $gid ) = @_;
+    return 0 unless $^O eq 'openbsd';
+    return 0 unless getuid() == 0 && geteuid() == 0;
+
+    $! = 0;
+    $) = "$gid $gid";    # effective gid + supplementary groups
+    return 0 if $!;
+    return 0 unless getegid() == $gid;
+    $! = 0;
+    $( = $gid;           # real gid
+    return 0 if $!;
+    setgid($gid) == 0 or return 0;
+    setuid($uid) == 0 or return 0;
+
+    getuid()  == $uid or return 0;
+    geteuid() == $uid or return 0;
+    getgid()  == $gid or return 0;
+    getegid() == $gid or return 0;
+    my @groups = getgroups();
+    @groups == 1 && $groups[0] == $gid or return 0;
+
+    # Saved credentials must be gone as well; attempting to regain
+    # root must fail.
+    setuid(0) == 0 and return 0;
+    return 1;
+}
+
+#
+# Session orchestration. Requires root (invoked through doas).
+#
+sub run {
+    my (@argv) = @_;
+
+    $^O eq 'openbsd'
+      or die "xsunaba-helper runs on OpenBSD only\n";
+    getuid() == 0 && geteuid() == 0
+      or die "xsunaba-helper must be invoked through doas as root\n";
+
+    my $opts = parse_args(@argv);
+
+    # Load the pledge/unveil bindings now so the children do not need
+    # filesystem access after their privileges are dropped.
+    require OpenBSD::Pledge;
+    require OpenBSD::Unveil;
+
+    # Scrub the environment. doas already built a fresh one; keep only
+    # what the children genuinely may receive.
+    my $passthru = _passthrough( \%ENV );
+    my $doas_user = $ENV{DOAS_USER};
+    %ENV = ();
+    $ENV{PATH} = $MINIMAL_PATH;
+
+    # The invoking user (as reported by doas) must own the parent
+    # Xauthority file. This prevents a login user from using the root
+    # helper to extract records from authority files of other users.
+    if ( defined $doas_user && length $doas_user ) {
+        my ($user) = $doas_user =~ /\A([a-z_][a-z0-9_-]{0,30})\z/
+          or die "invalid DOAS_USER\n";
+        my @pw = getpwnam($user) or die "DOAS_USER '$user' unknown\n";
+        my @st = stat $opts->{parent_xauth}
+          or die "stat $opts->{parent_xauth}: $!\n";
+        -f _
+          or die "$opts->{parent_xauth} is not a regular file\n";
+        $st[4] == $pw[2]
+          or die "$opts->{parent_xauth} is not owned by '$user'\n";
+    }
+
+    my $xephyr = getpwnam($XEPHYR_USER)
+      or die "user $XEPHYR_USER missing; run 'doas make install-users'\n";
+    my $app = getpwnam($APP_USER)
+      or die "user $APP_USER missing; run 'doas make install-users'\n";
+    my $appgrp = getgrnam($APP_GROUP)
+      or die "group $APP_GROUP missing; run 'doas make install-users'\n";
+    die "$XEPHYR_USER must not be root\n" if $xephyr->uid == 0;
+    die "$APP_USER must not be root\n"    if $app->uid == 0;
+    die "$XEPHYR_USER and $APP_USER share a UID\n"
+      if $xephyr->uid == $app->uid;
+    die "primary group of $APP_USER must be $APP_GROUP\n"
+      unless $app->gid == $appgrp->gid;
+
+    _ensure_run_dir();
+
+    # Serialize display allocation and hold the lock until the socket
+    # is created, so two helpers can never claim the same display.
+    sysopen( my $lock, "$RUN_DIR/display.lock", O_CREAT | O_RDWR, 0600 )
+      or die "open $RUN_DIR/display.lock: $!";
+    flock( $lock, LOCK_EX ) or die "flock: $!";
+
+    my $display = find_free_display(
+        $opts->{display},
+        sub { path_exists( socket_path( $_[0] ) ) },
+    );
+    die "no free X display from :$opts->{display} through :$MAX_DISPLAY\n"
+      unless defined $display;
+    my $socket = socket_path($display);
+
+    my $session = make_session_dir();
+    my $xephyr_dir = "$session/xephyr";
+    my $app_dir    = "$session/app";
+    my $run_dir    = "$app_dir/run";
+
+    my $xephyr_pid;
+    my $app_pid;
+    my $aborted = 0;
+
+    my $fatal = sub {
+        my ($msg) = @_;
+        _err $msg;
+        if ($xephyr_pid) {
+            kill 'TERM', $xephyr_pid;
+            select undef, undef, undef, 0.1;
+            kill 'KILL', $xephyr_pid;
+            waitpid( $xephyr_pid, 0 );
+        }
+        if ($app_pid) {
+            kill 'TERM', $app_pid;
+            select undef, undef, undef, 0.1;
+            kill 'KILL', $app_pid;
+            waitpid( $app_pid, 0 );
+        }
+        if ( lstat $socket && -S _ && ( stat _ )[4] == $xephyr->uid ) {
+            unlink $socket or _wrn "cannot remove $socket: $!";
+        }
+        remove_tree( $session, { safe => 1 } );
+        exit 1;
+    };
+
+    local $SIG{INT} = local $SIG{TERM} = local $SIG{HUP} = sub {
+        $aborted = 1;
+        kill 'TERM', $xephyr_pid if $xephyr_pid;
+        kill 'TERM', $app_pid    if $app_pid;
+    };
+    # Deterministic SIGUSR1 disposition: Xephyr notifies the parent
+    # only when it inherited SIG_IGN; we want the default so that no
+    # signal race exists.
+    local $SIG{USR1} = 'DEFAULT';
+
+    mkdir $xephyr_dir, 0700 or $fatal->("mkdir $xephyr_dir: $!");
+    chown( $xephyr->uid, $xephyr->gid, $xephyr_dir ) == 1
+      or $fatal->("chown $xephyr_dir: $!");
+    mkdir $app_dir, 0700 or $fatal->("mkdir $app_dir: $!");
+    chown( $app->uid, $app->gid, $app_dir ) == 1
+      or $fatal->("chown $app_dir: $!");
+    mkdir $run_dir, 0700 or $fatal->("mkdir $run_dir: $!");
+    chown( $app->uid, $app->gid, $run_dir ) == 1
+      or $fatal->("chown $run_dir: $!");
+
+    my $parent_auth = "$xephyr_dir/parent-auth";
+    my $server_auth = "$xephyr_dir/server-auth";
+    my $client_auth = "$app_dir/client-auth";
+
+    # Parent-display credentials for Xephyr: only the records for the
+    # requested DISPLAY, never the complete authority database.
+    {
+        my $records = eval { read_xauth_file( $opts->{parent_xauth} ) };
+        $fatal->("$@") if $@;
+        my $matched =
+          eval { extract_parent_auth( $records, $opts->{parent_display} ) };
+        $fatal->("$@") if $@;
+        @$matched
+          or $fatal->(
+            "no MIT-MAGIC-COOKIE-1 entry for "
+              . "$opts->{parent_display} in $opts->{parent_xauth}" );
+        write_xauth_file( $parent_auth, $matched );
+        chown( $xephyr->uid, $xephyr->gid, $parent_auth ) == 1
+          or $fatal->("chown $parent_auth: $!");
+    }
+
+    # Nested-display credentials: one fresh random cookie per session,
+    # duplicated into separate authority files for Xephyr (server) and
+    # the application (client). Never exposed to the login user.
+    my $cookie = eval { gen_cookie() };
+    $fatal->("$@") if $@;
+    my $host = eval { _hostname() };
+    $fatal->("$@") if $@;
+    my $records = xauth_records_for( $host, $display, $cookie );
+
+    write_xauth_file( $server_auth, $records );
+    chown( $xephyr->uid, $xephyr->gid, $server_auth ) == 1
+      or $fatal->("chown $server_auth: $!");
+    write_xauth_file( $client_auth, $records );
+    chown( $app->uid, $app->gid, $client_auth ) == 1
+      or $fatal->("chown $client_auth: $!");
+
+    _inf "using display :$display";
+    _inf "session directory $session";
+
+    # --- Xephyr, as the dedicated Xephyr UID ---
+    $xephyr_pid = fork();
+    defined $xephyr_pid or $fatal->("fork: $!");
+    if ( $xephyr_pid == 0 ) {
+        delete $SIG{$_} for keys %SIG;
+        chdir $xephyr_dir
+          or _err("chdir $xephyr_dir: $!"), _exit(1);
+        %ENV = %{
+            build_xephyr_env(
+                display    => $opts->{parent_display},
+                xauthority => $parent_auth,
+                home       => $xephyr_dir,
+                passthru   => $passthru,
+            )
+        };
+        drop_privs( $xephyr->uid, $xephyr->gid )
+          or _err( "failed to drop privileges for Xephyr" ), _exit(1);
+        {
+            exec $XEPHYR_BIN,
+              '-auth', $server_auth,
+              '-screen', "$opts->{width}x$opts->{height}",
+              '-br', '-nolisten', 'tcp', '-noreset',
+              ":$display";
+        }
+        _err "exec $XEPHYR_BIN: $!";
+        _exit(1);
+    }
+    _inf "Xephyr started (PID $xephyr_pid)";
+
+    # --- Wait for the socket, then restrict it ---
+    _wait_for_socket(
+        $socket, $xephyr_pid, $xephyr->uid, $appgrp->gid, $fatal,
+    );
+    close $lock;
+    _inf "socket $socket restricted to "
+      . sprintf( '%o', $SOCKET_MODE );
+
+    # --- Application, as the dedicated application UID ---
+    $app_pid = fork();
+    defined $app_pid or $fatal->("fork: $!");
+    if ( $app_pid == 0 ) {
+        delete $SIG{$_} for keys %SIG;
+        chdir $app->dir
+          or _err("chdir $app->dir: $!"), _exit(1);
+        %ENV = %{
+            build_app_env(
+                display     => ":$display",
+                xauthority  => $client_auth,
+                home        => $app->dir,
+                shell       => $app->shell,
+                username    => $APP_USER,
+                runtime_dir => $run_dir,
+                passthru    => $passthru,
+            )
+        };
+        drop_privs( $app->uid, $app->gid )
+          or _err( "failed to drop privileges for the application" ),
+             _exit(1);
+        if ( @{ $opts->{unveil} } ) {
+            my @entries = @{
+                build_unveil_entries(
+                    socket_path => $socket,
+                    client_auth => $client_auth,
+                    runtime_dir => $run_dir,
+                    user_entries => $opts->{unveil},
+                )
+            };
+            for my $entry (@entries) {
+                my ( $path, $perm ) = split /:/, $entry, 2;
+                OpenBSD::Unveil::unveil( $path, $perm )
+                  or _err( "unveil($path): $!" ), _exit(1);
+            }
+            OpenBSD::Unveil::unveil()
+              or _err("unveil lock: $!"), _exit(1);
+        }
+        { exec $opts->{app}, @{ $opts->{app_args} } }
+        _err "exec $opts->{app}: $!";
+        _exit(1);
+    }
+    _inf "launched '$opts->{app}' (PID $app_pid)";
+
+    # The helper no longer needs to fork, execute or write files other
+    # than during teardown. Fail closed: a failed pledge tears the
+    # session down.
+    unless ( OpenBSD::Pledge::pledge( 'stdio rpath cpath fattr proc' ) ) {
+        $fatal->("pledge failed: $!");
+    }
+
+    # --- Wait for the application ---
+    my $app_status;
+    while (1) {
+        my $pid = waitpid( -1, 0 );
+        if ( $pid == $app_pid ) {
+            $app_status = $?;
+            last;
+        }
+        if ( $pid == $xephyr_pid ) {
+            _err "Xephyr exited unexpectedly";
+            $app_status = 1;
+            $aborted    = 1;
+            last;
+        }
+        last if $pid < 0;
+    }
+
+    if ($aborted && $app_pid) {
+        kill 'TERM', $app_pid;
+        _stop_child( $app_pid, 'the application' );
+    }
+
+    _stop_xephyr( $xephyr_pid, $socket, $xephyr->uid );
+
+    remove_tree( $session, { safe => 1 } );
+    _inf "cleanup complete";
+    return exit_status( defined $app_status ? $app_status : 1 );
+}
+
+sub _ensure_run_dir {
+    if ( mkdir $RUN_DIR, 0711 ) {
+        chmod 0711, $RUN_DIR or die "chmod $RUN_DIR: $!";
+        return;
+    }
+    die "mkdir $RUN_DIR: $!" unless $!{EEXIST};
+    my @st = lstat $RUN_DIR or die "lstat $RUN_DIR: $!";
+    -d _ or die "$RUN_DIR exists and is not a directory\n";
+    $st[4] == 0 or die "$RUN_DIR is not owned by root\n";
+    ( $st[2] & 022 ) == 0 or die "$RUN_DIR is group or world writable\n";
+    chmod 0711, $RUN_DIR or die "chmod $RUN_DIR: $!";
+}
+
+sub _hostname {
+    my $host = hostname();
+    my ($clean) = $host =~ /\A([[:alnum:].-]{1,255})\z/
+      or die "invalid hostname\n";
+    return $clean;
+}
+
+sub _wait_for_socket {
+    my ( $socket, $pid, $uid, $gid, $fatal ) = @_;
+    for ( 1 .. 300 ) {
+        my $reaped = waitpid( $pid, WNOHANG );
+        $fatal->("Xephyr exited before opening $socket")
+          if $reaped == $pid;
+        if ( lstat $socket ) {
+            -S _ or $fatal->("$socket exists but is not a socket");
+            my $owner = ( stat _ )[4];
+            $fatal->("$socket is not owned by the Xephyr UID")
+              unless $owner == $uid;
+            chown( $uid, $gid, $socket ) == 1
+              or $fatal->("chown $socket: $!");
+            chmod( $SOCKET_MODE, $socket ) == 1
+              or $fatal->("chmod $socket: $!");
+            my @st = lstat $socket
+              or $fatal->("lstat $socket: $!");
+            $fatal->("failed to restrict $socket")
+              unless ( $st[2] & S_IFMT ) == S_IFSOCK
+              && $st[4] == $uid
+              && $st[5] == $gid
+              && ( $st[2] & 0777 ) == $SOCKET_MODE;
+            return;
+        }
+        $fatal->("lstat $socket: $!") unless $!{ENOENT};
+        select undef, undef, undef, 0.05;
+    }
+    $fatal->("timed out waiting for Xephyr to open $socket");
+}
+
+sub _stop_child {
+    my ( $pid, $what ) = @_;
+    return unless $pid;
+    kill 'TERM', $pid;
+    for ( 1 .. 20 ) {
+        my $reaped = waitpid( $pid, WNOHANG );
+        last if $reaped == $pid || $reaped < 0;
+        select undef, undef, undef, 0.1;
+    }
+    if ( waitpid( $pid, WNOHANG ) == 0 ) {
+        kill 'KILL', $pid;
+        waitpid( $pid, 0 );
+    }
+    _inf "stopped $what (PID $pid)";
+}
+
+sub _stop_xephyr {
+    my ( $pid, $socket, $uid ) = @_;
+    return unless $pid;
+    kill 'TERM', $pid;
+    for ( 1 .. 20 ) {
+        my $reaped = waitpid( $pid, WNOHANG );
+        last if $reaped == $pid || $reaped < 0;
+        select undef, undef, undef, 0.1;
+    }
+    if ( waitpid( $pid, WNOHANG ) == 0 ) {
+        kill 'KILL', $pid;
+        waitpid( $pid, 0 );
+    }
+    _inf "stopped Xephyr (PID $pid)";
+    if ( lstat $socket && -S _ && ( stat _ )[4] == $uid ) {
+        unlink $socket or _wrn "cannot remove $socket: $!";
+    }
+}
+
+package main;
+
+unless (caller) {
+    exit Xsunaba::Helper::run(@ARGV);
+}
+
+1;

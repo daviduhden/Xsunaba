@@ -2,48 +2,133 @@
 
 ## Overview
 
-`Xsunaba` is an OpenBSD tool that runs X11 GUI applications with two optional isolation layers: a nested display via [Xephyr(1)](https://man.openbsd.org/Xephyr) and a restricted filesystem view via [unveil(2)](https://man.openbsd.org/unveil). It also exposes a low-level [pledge(2)](https://man.openbsd.org/pledge) helper for restricting Perl code itself.
+`Xsunaba` runs X11 GUI applications on OpenBSD inside a nested
+[Xephyr(1)](https://man.openbsd.org/Xephyr) display, under dedicated
+Unix accounts, with optional filesystem restriction via
+[unveil(2)](https://man.openbsd.org/unveil). The name comes from the
+Japanese word 砂場 (_sunaba_, meaning sandbox).
 
-The name comes from the Japanese word 砂場 (_sunaba_, meaning sandbox).
+The security boundary is **Unix account separation plus X11
+authentication plus socket permissions**. Xephyr and the application
+run under two dedicated local users that are distinct from your login
+user. Neither account can read your credentials, and your login user
+cannot read the nested display's credentials. `unveil(2)` and
+`pledge(2)` are applied on top as defense in depth, not as the
+boundary itself.
 
-### How the sandbox works
+```
+login user (you)
+    |
+    | parent X display :0
+    v
+_xsunaba_xephyr  (runs Xephyr only)
+    |
+    | nested X display :NN
+    v
+_xsunaba_app  (runs the application only)
+```
 
-1. **Display isolation** &mdash; `Xsunaba` starts a [Xephyr(1)](https://man.openbsd.org/Xephyr) nested X server that appears as a window inside your existing X session. The application renders into this nested display and cannot see keystrokes or X events intended for other windows in your real session. This prevents a compromised or nosy application from keylogging, screen-grabbing, or injecting input into your other applications.
+### Principals
 
-2. **Filesystem restriction** &mdash; When `XSUNABA_UNVEIL` is configured, `Xsunaba` calls [unveil(2)](https://man.openbsd.org/unveil) and locks the resulting view before executing the application. The restricted view remains in the process across `exec`.
+| Principal | UID | Can access |
+|---|---|---|
+| Login user | yours | Parent display, everything you own |
+| `_xsunaba_xephyr` | dedicated | Parent display (as Xephyr's outer window), nested display server side |
+| `_xsunaba_app` | dedicated | Nested display only |
 
-When `XSUNABA_UNVEIL` is set, the application can only access paths you explicitly allow, plus its private X authority file and the X11 socket directory. This is a kernel-enforced mitigation, not a complete security boundary.
+### Why this matters
 
-`OpenBSD::Pledge(3p)` accepts only the promises for the current Perl process; it does not expose the `execpromises` argument of `pledge(2)`. Since a program executed without `execpromises` starts without pledge restrictions, Xsunaba deliberately does not claim to pledge an arbitrary target application. A non-empty legacy `XSUNABA_PLEDGE` value is rejected instead of silently providing no protection. Applications such as OpenBSD's browsers may install their own pledge policy after startup.
+X11 access control with MIT-MAGIC-COOKIE-1 depends entirely on
+keeping the cookie secret. In older Xsunaba versions, Xephyr and the
+application ran as your login UID: any other process of yours could
+read the temporary X authority file and join the nested display, and
+the application could read your real `~/.Xauthority`. Merely using a
+different DISPLAY number is not isolation.
+
+The redesign removes that dependency on voluntary cooperation:
+
+1. A process running as your login user **cannot** authenticate to the
+   nested display: the cookie files are mode 0600 and owned by the two
+   dedicated accounts, and the nested socket is mode 0660 owned by the
+   Xephyr account, group `_xsunaba`, which your login user is not a
+   member of.
+
+2. An application launched by Xsunaba **cannot** obtain credentials
+   for the parent display, with or without `XSUNABA_UNVEIL`: it runs
+   as `_xsunaba_app`, its environment is rebuilt from scratch
+   (`DISPLAY` points to the nested display, `XAUTHORITY` to its own
+   authority file), and the parent's credentials are mode 0600 files
+   owned by you or by the Xephyr account.
+
+3. The application never runs with your UID, and Xephyr never runs
+   with the application's UID.
+
+4. Xephyr is itself a client of the parent X server. A malicious
+   client already authorized on the parent display may still observe,
+   resize, inject input into, or otherwise interfere with the Xephyr
+   outer window. Xsunaba prevents **direct** access to the nested
+   server by other processes and prevents the nested application from
+   reaching the parent display; it cannot make two X11 clients on the
+   same parent X server mutually isolated. Stronger host-to-sandbox
+   isolation requires a separate X server/session/VT, a virtual
+   machine, or another display architecture.
 
 ### What this is not
 
-- This is **not** a full virtual machine or container. It does not provide kernel-level isolation like [vmm(4)](https://man.openbsd.org/vmm).
-- Xephyr is another same-user process and part of the attack surface; display separation does not make it a hardened security boundary.
-- A determined attacker who compromises the application may still be able to escape the sandbox, especially if you grant broad unveil paths.
-- There is no window manager inside the Xephyr display. The application runs full-screen at the configured resolution. If your app needs session setup, wrap it in a shell script.
-
-The goal is to raise the cost of attacks while keeping things lightweight and easy to configure. This is a mitigation, not a guarantee.
+- This is **not** a full virtual machine or container. It does not
+  provide kernel-level isolation like [vmm(4)](https://man.openbsd.org/vmm).
+- Xephyr is not a hardened security boundary; it is an unprivileged X
+  client of the parent display (see above).
+- Separate Xsunaba invocations are **not** mutually isolated: they
+  share the `_xsunaba_app` account, so an application in one session
+  can read another session's application-side files (including its
+  client authority file) and its shared home directory. Per-session
+  isolation would require per-session UIDs.
+- There is no window manager inside the Xephyr display. The
+  application runs full-screen at the configured resolution. Wrap the
+  command in a shell script if your app needs session setup.
 
 ## Prerequisites
 
-- **OpenBSD** &mdash; this is the supported platform. The pledge/unveil wrappers become no-ops elsewhere, but the Xenocara paths and overall launcher layout are OpenBSD-specific.
-- **Perl** &mdash; included in the OpenBSD base system.
-- **Xephyr** &mdash; provided by OpenBSD's versioned `xserv` installation set (for example, `xserv79.tgz` on OpenBSD 7.9). It is not installed with `pkg_add`.
-- **xauth** &mdash; included with Xenocara (the OpenBSD X11 distribution).
-- **openssl** &mdash; included in the base system, used to generate X11 magic cookies for authenticating connections to the Xephyr display.
+- **OpenBSD** with Perl (both in base).
+- **Xephyr** from the `xserv` installation set (e.g. `xserv79.tgz` on
+  OpenBSD 7.9); it is not installed with `pkg_add`.
+- **doas(1)** (in base) with the rule described below.
+- No `xauth` or `openssl` dependency: authority databases are parsed,
+  built and written directly by the helper, and cookies come from
+  `/dev/urandom`.
 
 ## Installation
 
-Clone the repository and run:
+```
+$ doas make install        # installs Xsunaba, the helper and the man page
+$ doas make install-users  # creates the dedicated accounts
+```
+
+Then review and append the following rule to `/etc/doas.conf`
+(`make show-doas-rule` prints it). Replace `<USER>` with your login
+name, or `:wheel` with a suitable group:
 
 ```
-$ doas make install
+permit nopass <USER> as root cmd /usr/local/libexec/xsunaba-helper args --parent-display
 ```
 
-This installs the `Xsunaba` script to `/usr/local/bin/Xsunaba` (mode 755) and the manual page to `/usr/local/man/man1/Xsunaba.1` (mode 444).
+The rule grants execution of **only** the root-owned helper, only
+with invocations that start with `--parent-display`. It grants nothing
+else as root. It deliberately does **not** grant arbitrary execution
+as the sandbox accounts: every operation must go through the helper's
+validated interface.
 
-There are no build steps &mdash; the tool is pure Perl. The Makefile simply copies files into place.
+`make install-users` creates:
+
+| Account | Group | Home | Shell | Purpose |
+|---|---|---|---|---|
+| `_xsunaba_xephyr` | `_xsunaba_xephyr` | `/nonexistent` | nologin | Runs Xephyr |
+| `_xsunaba_app` | `_xsunaba` | `/home/_xsunaba_app` | ksh | Runs applications |
+| `_xsunaba` (group) | - | - | - | Socket group for the application UID |
+
+Review the commands in the Makefile before running them; they are
+idempotent.
 
 ### Uninstalling
 
@@ -51,11 +136,10 @@ There are no build steps &mdash; the tool is pure Perl. The Makefile simply copi
 $ doas make uninstall
 ```
 
-Removes the script and the man page from `/usr/local`.
+The dedicated accounts are not removed (their home directory may
+contain application data); remove them manually if desired.
 
 ## Usage
-
-### Basic usage
 
 Prefix any X application command with `Xsunaba`:
 
@@ -66,27 +150,68 @@ $ Xsunaba xterm &
 $ Xsunaba gimp &
 ```
 
-This starts the application inside a Xephyr window. No filesystem restrictions are applied unless you set `XSUNABA_UNVEIL`.
+The application runs as `_xsunaba_app` inside a Xephyr window owned
+by `_xsunaba_xephyr`. No filesystem restrictions are applied unless
+you set `XSUNABA_UNVEIL`; the Unix-account, X11-authentication and
+socket-permission layers always apply.
 
 ### Restricting the filesystem with unveil
 
-Set `XSUNABA_UNVEIL` to a comma-separated list of `path:permission` pairs. Only these paths will be visible to the application:
+Set `XSUNABA_UNVEIL` to a comma-separated list of `path:permission`
+pairs. Only these paths will be visible to the application:
 
 ```
 $ XSUNABA_UNVEIL="/usr/local/bin/firefox:rx,/usr/local/lib/firefox:rx,/tmp:rwc,/etc:r,/dev:r" \
   Xsunaba firefox --private-window
 ```
 
-The application can now:
-- Execute `/usr/local/bin/firefox` and its runtime (`rx`)
-- Read and create files in `/tmp` (`rwc`)
-- Read files in `/etc` and `/dev` (`r`)
+The application can now execute `/usr/local/bin/firefox` and its
+runtime (`rx`), read and create files in `/tmp` (`rwc`) and read
+`/etc` and `/dev` (`r`). Everything else is invisible.
 
-Everything else on the filesystem is invisible. Xsunaba additionally unveils its private authority file with `r` and `/tmp/.X11-unix` with `rw`, after the user entries and before locking unveil. It does not automatically expose all of `/dev`; add only the devices the application needs.
+Additionally, Xsunaba always unveils for the application, after your
+entries and before locking:
+
+- `/tmp/.X11-unix/X<NN>` with `w` &mdash; the exact nested socket
+  only (`w` permits `connect(2)` to AF_UNIX sockets). The
+  `/tmp/.X11-unix` directory itself is **not** exposed.
+- the application's own client authority file with `r`;
+- its per-session `XDG_RUNTIME_DIR` with `rwxc`.
+
+Note that the application's home is now `/home/_xsunaba_app`; unveil
+paths must reference it (e.g.
+`/home/_xsunaba_app/.mozilla:rwc`), not your own home.
+
+`unveil` is an **additional** restriction. The account and credential
+separation holds when `XSUNABA_UNVEIL` is unset.
+
+### Sharing files with the sandbox
+
+The application cannot read your files (different UID, private home
+directory). To share specific data, copy it into
+`/home/_xsunaba_app` (as root), or use a directory readable by the
+`_xsunaba_app` account. Anything readable by `_xsunaba_app` is
+readable by every Xsunaba application session.
+
+### Audio
+
+`sndio` authentication is per-user; the sandbox account does not have
+your `~/.sndio/cookie`. To allow audio, copy or expose the cookie to
+the sandbox account yourself (this weakens audio isolation):
+
+```
+# doas -u _xsunaba_app mkdir -m 700 /home/_xsunaba_app/.sndio
+# doas cp ~/.sndio/cookie /home/_xsunaba_app/.sndio/cookie
+# doas chown _xsunaba_app:_xsunaba /home/_xsunaba_app/.sndio/cookie
+```
+
+and unveil `~/.sndio/cookie:r` plus `/tmp/sndio:rwc` for the
+application.
 
 ### Changing the Xephyr display
 
-By default Xephyr starts on display `:32` and scans upward (`:33`, `:34`, ..., `:99`) if that socket is already taken. You can set a different starting display:
+By default Xephyr starts at display `:32` and scans upward to find a
+free socket. Set a different starting display:
 
 ```
 $ XSUNABA_DISPLAY=":50" Xsunaba firefox
@@ -98,37 +223,48 @@ $ XSUNABA_DISPLAY=":50" Xsunaba firefox
 $ WIDTH=1280 HEIGHT=1024 Xsunaba firefox
 ```
 
-Xephyr will open a window of 1280&times;1024 pixels. For `firefox` and `chrome`, `Xsunaba` automatically appends geometry flags so the browser fills the Xephyr window.
+For `firefox` and `chrome`, `Xsunaba` automatically appends geometry
+flags so the browser fills the Xephyr window.
 
 ### Verbose output
-
-Set `VERBOSE` to a non-empty value to see what `Xsunaba` is doing:
 
 ```
 $ VERBOSE=1 Xsunaba firefox
 [INFO] using display :32
+[INFO] session directory /var/run/xsunaba/<random>
 [INFO] Xephyr started (PID 12345)
 [INFO] launched 'firefox' (PID 12346)
-[INFO] stopping Xephyr (PID 12345)
+[INFO] stopped Xephyr (PID 12345)
 [INFO] cleanup complete
 ```
+
+Authentication material never appears in any output.
 
 ## Environment variable reference
 
 | Variable | Default | Description |
 |---|---|---|
-| `XSUNABA_UNVEIL` | _(unset, full filesystem visible)_ | Comma-separated list of `path:perm` entries. Each entry restricts or grants filesystem access for the application. When unset, the application inherits the launcher's filesystem view (no restrictions). |
-| `XSUNABA_DISPLAY` | `:32` | Starting display number. Xephyr scans from here up to `:99` looking for a free socket in `/tmp/.X11-unix/`. |
+| `XSUNABA_UNVEIL` | _(unset, full filesystem visible to the sandbox account)_ | Comma-separated `path:perm` entries passed to unveil(2) for the application. When unset, no unveil is applied; the account and credential separation still holds. |
+| `XSUNABA_DISPLAY` | `:32` | Starting display number; Xephyr scans upward for a free socket. |
 | `WIDTH` | `1024` | Xephyr display width in pixels. |
 | `HEIGHT` | `768` | Xephyr display height in pixels. |
-| `VERBOSE` | _(unset)_ | Set to a non-empty value to emit diagnostic messages during setup and cleanup. |
+| `VERBOSE` | _(unset)_ | Emit diagnostic messages. |
+
+The application's environment is rebuilt from scratch and contains
+only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `DISPLAY`,
+`XAUTHORITY`, `XDG_RUNTIME_DIR`, and (if present in the invoking
+environment) `TERM`, `TZ`, `LANG` and `LC_*`. Variables such as
+`DBUS_SESSION_BUS_ADDRESS`, `SSH_AUTH_SOCK`, `SSH_AGENT_PID`,
+`GPG_AGENT_INFO`, `WAYLAND_DISPLAY`, `XDG_SESSION_*`, `KRB5CCNAME`,
+`sndio` variables and `XSUNABA_*` are never forwarded. The invoking
+environment is not copied wholesale into the sandbox account.
 
 ### Unveil permission codes
 
 | Code | Allowed operations |
 |---|---|
 | `r` | Read files, list directories. |
-| `rx` | Read and execute. Use this for binaries and shared libraries. |
+| `rx` | Read and execute. Use for binaries and shared libraries. |
 | `rw` | Read and write existing files. |
 | `rwx` | Read, write, and execute existing files. |
 | `rwc` | Read, write, and create new files. |
@@ -136,18 +272,19 @@ $ VERBOSE=1 Xsunaba firefox
 
 ## Choosing unveil paths for common applications
 
-Every application needs different paths. Here are starting points for common programs.
+Every application needs different paths; remember that profile
+directories now live under `/home/_xsunaba_app`. Starting points:
 
 ### Firefox
 
 ```
-XSUNABA_UNVEIL="/usr/local/bin/firefox:rx,/usr/local/lib/firefox:rx,/tmp:rwc,/etc:r,/dev:r,$HOME/.mozilla:rwc,/usr/local/lib:rx,/usr/lib:rx,/usr/X11R6/lib:rx,/usr/local/share:r,/usr/share:r"
+XSUNABA_UNVEIL="/usr/local/bin/firefox:rx,/usr/local/lib/firefox:rx,/tmp:rwc,/etc:r,/dev:r,/home/_xsunaba_app/.mozilla:rwc,/usr/local/lib:rx,/usr/lib:rx,/usr/X11R6/lib:rx,/usr/local/share:r,/usr/share:r"
 ```
 
 ### Chromium / Chrome
 
 ```
-XSUNABA_UNVEIL="/usr/local/bin/chrome:rx,/usr/local/chrome:rx,/tmp:rwc,/etc:r,/dev:r,$HOME/.config/chromium:rwc,$HOME/.cache/chromium:rwc,/usr/local/lib:rx,/usr/lib:rx,/usr/X11R6/lib:rx,/usr/local/share:r,/usr/share:r"
+XSUNABA_UNVEIL="/usr/local/bin/chrome:rx,/usr/local/chrome:rx,/tmp:rwc,/etc:r,/dev:r,/home/_xsunaba_app/.config/chromium:rwc,/home/_xsunaba_app/.cache/chromium:rwc,/usr/local/lib:rx,/usr/lib:rx,/usr/X11R6/lib:rx,/usr/local/share:r,/usr/share:r"
 ```
 
 ### xterm
@@ -156,136 +293,144 @@ XSUNABA_UNVEIL="/usr/local/bin/chrome:rx,/usr/local/chrome:rx,/tmp:rwc,/etc:r,/d
 XSUNABA_UNVEIL="/usr/X11R6/bin/xterm:rx,/tmp:rwc,/etc:r,/dev:r"
 ```
 
-### Generic pattern
+## Runtime files
 
-At minimum, most GUI applications need:
+| Path | Owner | Mode | Purpose |
+|---|---|---|---|
+| `/var/run/xsunaba/` | root:wheel | 0711 | Session runtime directory (created by the helper). |
+| `/var/run/xsunaba/<random>/` | root:wheel | 0711 | One session. Traversable but not listable by users. |
+| `.../xephyr/` | `_xsunaba_xephyr` | 0700 | Xephyr private directory. |
+| `.../xephyr/parent-auth` | `_xsunaba_xephyr` | 0600 | Only the parent-display MIT-MAGIC-COOKIE-1 records Xephyr needs. |
+| `.../xephyr/server-auth` | `_xsunaba_xephyr` | 0600 | Fresh per-session nested cookie, passed to Xephyr via `-auth`. |
+| `.../app/` | `_xsunaba_app` | 0700 | Application private directory. |
+| `.../app/client-auth` | `_xsunaba_app` | 0600 | Same nested cookie, for the application (`XAUTHORITY`). |
+| `.../app/run/` | `_xsunaba_app` | 0700 | Per-session `XDG_RUNTIME_DIR`. |
+| `/tmp/.X11-unix/X<NN>` | `_xsunaba_xephyr:_xsunaba` | 0660 | Nested socket, tightened after Xephyr creates it. |
 
-- Their own binary: `path:rx`
-- Their config and cache directories: `path:rwc`
-- `/tmp`: `rwc`
-- `/etc`: `r`
-- `/dev`: `r`
-- Library directories if they load shared objects at runtime: `rx`
+Your login user owns none of the authority files and cannot read
+them. The nested cookie is never placed in command-line arguments,
+logs, the environment of unrelated processes, or predictable
+locations. Nothing security-sensitive is kept in `/tmp`.
 
-Start with the minimum, run with `VERBOSE=1`, and add paths if the application fails to start.
+## Architecture
+
+`Xsunaba` is a thin frontend. It validates its arguments and executes
+`/usr/local/libexec/xsunaba-helper` through doas. The root-owned
+helper controls the entire session:
+
+1. It validates every argument (parent display must be local, the
+   parent Xauthority must be owned by the invoking user, the
+   application path must be absolute, geometry values bounded, unveil
+   entries well-formed) and fails closed on any error.
+2. It acquires `/var/run/xsunaba/display.lock` and allocates a free
+   nested display atomically; callers can never join an existing
+   session, supply a session directory, socket pathname, UID or
+   authority file.
+3. It creates a random session directory and copies only the
+   parent-display `MIT-MAGIC-COOKIE-1` records from your Xauthority
+   into `xephyr/parent-auth`.
+4. It generates a fresh 128-bit cookie from `/dev/urandom` and writes
+   it into `server-auth` and `client-auth` (two authority files, one
+   trust domain per file, both mode 0600).
+5. It forks Xephyr as `_xsunaba_xephyr` with a sanitized environment,
+   `-auth` set to `server-auth`, `-nolisten tcp` and `-noreset`.
+6. Once the nested socket exists, it verifies Xephyr created it, then
+   chowns it to `_xsunaba_xephyr:_xsunaba` and chmods it to 0660,
+   so only the two sandbox accounts can connect. `-noreset` prevents
+   the server from recreating the socket with loose permissions on a
+   reset. (The X server otherwise creates sockets with umask(0) and
+   mode 0777.)
+7. It forks the application as `_xsunaba_app` with a rebuilt
+   environment, optionally applies your unveil entries plus the exact
+   nested socket (`w`), the client authority (`r`) and the runtime
+   directory (`rwxc`), locks unveil, and execs the application.
+8. It waits for the application, stops Xephyr, removes the socket and
+   the session tree, and returns the application's exit status.
+
+The helper then pledges itself (`stdio rpath cpath fattr proc`) for
+the teardown phase; the frontend pledges `stdio exec`. The helper
+drops privileges with verified `setgid`/`setuid` sequences and checks
+that privileges cannot be regained. Children never inherit privileged
+state, supplementary groups are reset, and every security-sensitive
+syscall is checked.
+
+### Why unveil alone was not enough
+
+Even with unveil, the old design exposed all of `/tmp/.X11-unix` and
+kept the nested cookie in a file readable by the login user, and the
+application still ran with the login UID. `unveil` restricts the
+process's own filesystem view; it does not create a credential
+boundary against other same-UID processes. That is what the separate
+accounts, the split authority files and the socket permissions now
+provide.
 
 ## Module usage (Perl API)
 
-`Xsunaba` can be loaded as a Perl module with `require`. This lets Perl programs restrict themselves with pledge/unveil or invoke the Xephyr/unveil launcher.
-
-### Quick start
+`Xsunaba` can be loaded as a Perl module. The low-level
+`pledge`/`unveil` helpers restrict the **current** process only, and
+`launch()` is the frontend used by the command-line tool (it requires
+the helper and the doas rule to be installed).
 
 ```perl
 #!/usr/bin/perl
 require '/usr/local/bin/Xsunaba';
 
-# Option 1: one-call convenience wrapper (no Xephyr, unveil + exec)
-Xsunaba::sandbox(
-    app    => 'xterm',
-    unveil => ['/usr/X11R6/bin/xterm:rx', '/tmp:rwc', '/etc:r'],
-);
-```
-
-```perl
-# Option 2: full Xephyr sandbox programmatically
 Xsunaba::launch(
     app     => '/usr/local/bin/firefox',
     args    => ['--private-window'],
     display => ':40',
     width   => 1280,
     height  => 900,
-    unveil  => ['/usr/local/bin/firefox:rx', '/usr/local/lib/firefox:rx', '/tmp:rwc', '/etc:r'],
+    unveil  => ['/usr/local/bin/firefox:rx', '/tmp:rwc'],
 );
 ```
 
-### Low-level API
-
-If you want fine-grained control, use the individual functions:
-
-```perl
-#!/usr/bin/perl
-require '/usr/local/bin/Xsunaba';
-
-# Restrict this Perl process to reading one file.
-Xsunaba::unveil('/usr/share/dict/words', 'r');
-
-# Lock the unveil list (no more unveil calls after this)
-Xsunaba::unveil_lock();
-
-# Restrict system calls
-Xsunaba::pledge('stdio rpath');
-
-open my $fh, '<', '/usr/share/dict/words' or die "open: $!";
-print while <$fh>;
-```
-
-### Function reference
-
-| Function | Arguments | Description |
-|---|---|---|
-| `pledge($promises)` | `$promises` &mdash; space-separated promise names | Splits the string into the list required by [OpenBSD::Pledge(3p)](https://man.openbsd.org/OpenBSD::Pledge), then calls `pledge(2)`. If omitted, the default `$PLEDGE_PROMISES` is used. No-op on non-OpenBSD systems. |
-| `unveil($path, $perm)` | `$path` &mdash; filesystem path<br>`$perm` &mdash; permission string (default `r`) | Calls [unveil(2)](https://man.openbsd.org/unveil). Must be called before `unveil_lock()`. No-op on non-OpenBSD systems. |
-| `unveil_lock()` | _(none)_ | Locks the unveil configuration. After this call, no more paths can be unveiled. The filesystem is now restricted to the announced paths. |
-| `sandbox(%opts)` | `app` &mdash; executable to run<br>`args` &mdash; array ref of arguments<br>`unveil` &mdash; array ref of `"path:perm"` strings<br>`lock` &mdash; boolean (default true when unveil entries exist) | Applies unveil, then `exec`s the application directly. No Xephyr. Suitable for command-line tools or headless processes. |
-| `launch(%opts)` | `app` &mdash; executable<br>`args` &mdash; arguments array ref<br>`display` &mdash; X display number<br>`width` &mdash; Xephyr width<br>`height` &mdash; Xephyr height<br>`unveil` &mdash; array ref of `"path:perm"` strings | Starts Xephyr, forks the application with optional unveil restrictions, waits for the app to exit, then stops Xephyr and cleans up. |
-
-### Package variables
-
-| Variable | Default | Description |
-|---|---|---|
-| `$Xsunaba::PLEDGE_PROMISES` | `stdio rpath wpath cpath fattr proc exec inet dns unix tty` | Default promise string used only by the low-level `pledge()` helper when its argument is omitted. |
+The `sandbox()` convenience wrapper applies unveil in the current
+process and execs a program; it does not switch UIDs or start Xephyr.
 
 ## Tips and troubleshooting
 
-### The application crashes immediately
-
-Run with `VERBOSE=1` to see what is happening. Common causes:
-
-- **Missing unveil paths**: The application cannot find its config files, shared libraries, or runtime data. Add the needed paths to `XSUNABA_UNVEIL`.
-- **Xephyr can't start**: Check that `/usr/X11R6/bin/Xephyr` from the `xserv` set is installed, that the host `DISPLAY` is valid, and that `/tmp/.X11-unix` is usable.
-- **Invalid geometry**: `WIDTH` and `HEIGHT` must be positive decimal integers.
-
-### The application can't play audio
-
-`sndio` uses Unix domain sockets and filesystem cookies. If unveil is enabled, you need:
-
-1. `~/.sndio/cookie` unveiled with `r` permission
-2. `/tmp/sndio` unveiled with `rwc` permission (or wherever `AUDIOSOCK` points)
-
-```
-XSUNABA_UNVEIL="$HOME/.sndio/cookie:r,/tmp/sndio:rwc,..."
-```
-
-### Running multiple sandboxes at once
-
-Xephyr uses separate display numbers, so you can run multiple sandboxed applications simultaneously. Selection is serialized with a per-user advisory lock in `/tmp`, preventing two concurrent launchers from claiming the same free socket. Each gets its own display number (starting from `XSUNABA_DISPLAY`):
-
-```
-$ Xsunaba firefox &
-$ Xsunaba chrome &
-$ XSUNABA_DISPLAY=":50" Xsunaba gimp &
-```
-
-### The window is too small
-
-Use `WIDTH` and `HEIGHT` to set the Xephyr window size. For `chrome` and `firefox`, geometry flags are automatically appended so the browser fills the Xephyr window. For other applications, you may need to pass geometry arguments yourself.
-
-### Graphics performance
-
-Acceleration depends on the Xephyr/Xorg build and host configuration. Do not assume that a particular renderer such as LLVMpipe is always selected; inspect the Xephyr log when diagnosing performance.
+- **Xephyr can't start**: check that the `xserv` set is installed,
+  that your parent `DISPLAY` is a local display (`:0`), that the
+  parent socket allows other users to connect (the default mode 0777
+  does), and that the doas rule is present.
+- **"no MIT-MAGIC-COOKIE-1 entry"**: your `~/.Xauthority` has no
+  cookie for the parent display; run `xauth list` to inspect it.
+- **App cannot read its files**: profile paths moved to
+  `/home/_xsunaba_app`; unveil entries must reference the new
+  location.
+- **Multiple sandboxes at once**: supported; display allocation is
+  serialized by the helper. Sessions share the sandbox accounts and
+  are not mutually isolated.
 
 ## Security considerations
 
-- `unveil` is enforced by the OpenBSD kernel and cannot be widened after it is locked.
-- The exported `pledge()` helper restricts the current Perl process only. It is suitable for embedded Perl workflows, but not for imposing promises on an arbitrary program executed afterward.
-- The Xephyr display isolation prevents X11-level snooping but does **not** protect against kernel exploits or hardware-level attacks.
-- Combine `Xsunaba` with other OpenBSD mitigations: keep your system updated, use full-disk encryption, and run applications under separate user accounts when additional isolation is needed.
-- When filesystem restriction is enabled, `/tmp/.X11-unix` is additionally unveiled with `rw` for X11 communication. Other sockets remain protected by their X authority cookies, but exposing the directory is still part of the attack surface.
-- Each run uses a mode-0600 temporary X authority file and passes it through `XAUTHORITY`; it is removed during normal cleanup.
+- The boundary is: separate Unix accounts, per-domain authority
+  files, a fresh cookie per invocation, a 0660 group-restricted
+  socket, and sanitized environments. `unveil`/`pledge` are
+  defense in depth.
+- Xephyr remains a client of the parent X server: an attacker already
+  authorized on the parent display can interfere with its window.
+- `_xsunaba_app` processes from different sessions share a UID and
+  can access each other's files; do not claim per-session isolation.
+- A compromised `_xsunaba_app` cannot read your `~/.Xauthority`
+  (mode 0600, private home) or the Xephyr authority files (mode 0600,
+  other UID), and cannot connect to the nested socket of other
+  sessions without their cookies.
+- Keep your system updated and prefer applications with their own
+  pledge(2) policies.
 
 ## History
 
-`Xsunaba` is based on [a script by Milosz Galazka](https://blog.sleeplessbeastie.eu/2013/07/19/how-to-create-browser-sandbox/) and was ported to OpenBSD and `doas` by Morgan Aldridge. David Uhden Collado rewrote it in Perl (2025) and later added unveil integration and Xephyr display isolation (2026). Milosz granted permission for this implementation to be released under the MIT license.
+`Xsunaba` is based on [a script by Milosz
+Galazka](https://blog.sleeplessbeastie.eu/2013/07/19/how-to-create-browser-sandbox/)
+and was ported to OpenBSD and `doas` by Morgan Aldridge. David Uhden
+Collado rewrote it in Perl (2025) and added unveil integration (2026).
+The 2026 redesign replaces the same-UID model (where the cookie files
+were readable by the login user) with dedicated `_xsunaba_xephyr` /
+`_xsunaba_app` accounts, a narrow root helper invoked through doas,
+split authority files, socket permission tightening and a rebuilt
+environment.
 
 ## License
 

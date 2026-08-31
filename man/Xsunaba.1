@@ -1,82 +1,180 @@
-.Dd $Mdocdate: August 5 2026 $
+.Dd $Mdocdate: August 31 2026 $
 .Dt XSUNABA 1
 .Os
 .Sh NAME
 .Nm Xsunaba
-.Nd isolate X11 applications with Xephyr and unveil
+.Nd run X11 applications in a nested Xephyr display under dedicated accounts
 .Sh SYNOPSIS
 .Nm
 .Op Ar command Op Ar argument ...
 .Sh DESCRIPTION
 The
 .Nm
-utility provides a two-layer sandbox for running X11 GUI applications
-on
-.Ox :
+utility runs X11 GUI applications on
+.Ox
+inside a nested
+.Xr Xephyr 1
+X server, under dedicated local accounts, with optional filesystem
+restriction via
+.Xr unveil 2 .
+.Pp
+The isolation boundary is Unix account separation combined with X11
+authentication and Unix socket permissions:
 .Bl -enum -compact -offset indent
 .It
-Display isolation via a nested
-.Xr Xephyr 1
-X server, which prevents the application from reading X events
-(keystrokes, mouse input, clipboard) intended for other windows in the
-parent X session.
+The application runs as the dedicated
+.Sy _xsunaba_app
+account, never as the invoking user.
 .It
-Filesystem restriction via
-.Xr unveil 2 ,
-which limits the filesystem paths available to the application process.
-This layer is configured through an environment variable.
+.Xr Xephyr 1
+runs as the dedicated
+.Sy _xsunaba_xephyr
+account, never as the application account.
+.It
+Each invocation generates a fresh 128-bit MIT-MAGIC-COOKIE-1 cookie,
+stored in separate mode-0600 authority files for the Xephyr server
+and the application.
+The invoking user cannot read them.
+.It
+The nested Unix socket
+.Pa /tmp/.X11-unix/X Ns Ao Ar NN Ac
+is tightened to mode 0660, owned by
+.Sy _xsunaba_xephyr ,
+group
+.Sy _xsunaba ,
+so only the two sandbox accounts can connect.
+.It
+The application environment is rebuilt from scratch:
+.Ev DISPLAY
+points to the nested display,
+.Ev XAUTHORITY
+to its own authority file, and no parent-display credentials or host
+IPC variables are forwarded.
+.It
+.Xr unveil 2
+and
+.Xr pledge 2
+are applied on top as defense in depth.
 .El
 .Pp
 When invoked from the command line,
 .Nm
-starts Xephyr on an unused display (default
-.Ql :32
-\-
-.Ql :99 ) ,
-generates an X11 magic cookie for authentication, forks the target
-application with user-specified unveil restrictions, waits
-for it to exit, then stops Xephyr and cleans up the authentication
-cookie.
+validates its arguments and executes the root-owned helper
+.Pa /usr/local/libexec/xsunaba-helper
+through
+.Xr doas 1 ,
+which creates the session, starts Xephyr, launches the application,
+waits for it to exit, stops Xephyr and cleans up all runtime state.
 .Pp
+Xephyr is itself an X client of the parent X server: a malicious
+client already authorized on the parent display may still observe,
+resize, inject input into or otherwise interfere with the Xephyr
+outer window.
 .Nm
-can also be loaded as a Perl module via
-.Cm require
-to incorporate pledge or unveil functionality into custom scripts,
-either with or without the Xephyr display layer.
+prevents direct access to the nested X server and prevents the nested
+application from reaching the parent display; it cannot isolate two
+clients of the same parent X server.
+Stronger host-to-sandbox isolation requires a separate X
+server/session/VT, a virtual machine, or another display
+architecture.
+.Sh PRIVILEGED HELPER
+The helper is deliberately small and only reachable through a narrow
+.Xr doas.conf 5
+rule:
+.Bd -literal -offset indent
+permit nopass USER as root cmd /usr/local/libexec/xsunaba-helper \e
+        args --parent-display
+.Ed
 .Pp
-The
-.Xr OpenBSD::Pledge 3p
-interface used by this Perl implementation configures only the current
-process and does not expose the
-.Fa execpromises
-argument of
-.Xr pledge 2 .
-An executed program would therefore start without those restrictions.
-.Nm
-does not claim to pledge arbitrary target applications and rejects a
-non-empty legacy
-.Ev XSUNABA_PLEDGE
-setting.
-The low-level
-.Fn pledge
-module function remains available for restricting Perl code itself.
+The rule permits only the helper executable, as root, and only
+invocations starting with
+.Fl -parent-display .
+It grants nothing else.
+The caller cannot supply an arbitrary Xauthority file for the nested
+display, an existing DISPLAY to join, a UID, a session directory, a
+socket pathname or other values that would permit joining another
+session.
+The helper:
+.Bl -bullet -compact
+.It
+validates every argument and fails closed;
+.It
+requires the parent Xauthority to be owned by the invoking user;
+.It
+allocates the nested display under a lock and never joins an
+existing session;
+.It
+copies only the parent-display MIT-MAGIC-COOKIE-1 records from the
+invoking user's Xauthority into a file readable only by
+.Sy _xsunaba_xephyr ;
+.It
+generates the nested cookie from
+.Pa /dev/urandom
+and writes it only into the two mode-0600 authority files;
+.It
+drops privileges with verified
+.Fn setgid
+and
+.Fn setuid
+sequences, resets supplementary groups and checks that privileges
+cannot be regained;
+.It
+restricts the nested socket to 0660
+.Sy _xsunaba_xephyr:_xsunaba
+once Xephyr has created it and runs Xephyr with
+.Fl noreset
+so the server cannot recreate the socket with looser permissions
+after a reset;
+.It
+rebuilds the application environment and optionally applies
+.Xr unveil 2 ;
+.It
+cleans up the socket and the session directory on exit;
+.It
+finally calls
+.Xr pledge 2
+with
+.Ql stdio rpath cpath fattr proc
+for the teardown phase.
+.El
 .Sh ENVIRONMENT
+The invoking process must have
+.Ev DISPLAY
+set to a local display
+.Pq e.g. Ql :0
+and
+.Ev HOME
+set.
+The parent X authority is taken from
+.Ev XAUTHORITY
+or, if unset,
+.Pa $HOME/.Xauthority .
+.Pp
+The application's environment is rebuilt and contains only
+.Ev PATH , HOME , USER , LOGNAME , SHELL , DISPLAY , XAUTHORITY ,
+.Ev XDG_RUNTIME_DIR ,
+and, if present in the invoking environment,
+.Ev TERM , TZ , LANG
+and
+.Ev LC_* .
+Variables such as
+.Ev DBUS_SESSION_BUS_ADDRESS , SSH_AUTH_SOCK , SSH_AGENT_PID ,
+.Ev GPG_AGENT_INFO , WAYLAND_DISPLAY , XDG_SESSION_* , KRB5CCNAME ,
+sndio variables and
+.Ev XSUNABA_*
+are never forwarded.
 .Bl -tag -width "XSUNABA_UNVEIL"
 .It Ev XSUNABA_UNVEIL
 Comma-separated list of
 .Ar path : Ar perm
 entries passed to
 .Xr unveil 2
-for the sandboxed application.
+for the application.
+When unset, no unveil restrictions are applied; the account and
+credential separation still holds.
 .Pp
-When unset, the application inherits the launcher's filesystem view
-and no additional unveil restrictions are applied (the filesystem is
-fully visible).
-When set, only the listed paths, the private X authority file, and the
-X11 socket directory are accessible after unveil is locked;
-all other paths become invisible.
-.Pp
-Permission codes are single-letter abbreviations that may be combined:
+Permission codes are single-letter abbreviations that may be
+combined:
 .Pp
 .Bl -tag -width "rwxc" -compact -offset indent
 .It r
@@ -93,26 +191,32 @@ Read, write, and create new files.
 Read, write, execute, and create (full access).
 .El
 .Pp
-Example:
-.Ql /usr/X11R6/bin/xterm:rx,/tmp:rwc,/etc:r,/dev:r .
+After the user entries,
+.Nm
+additionally unveils, before locking:
 .Pp
-The private X authority file and
+.Bl -tag -width "XDG_RUNTIME_DIR" -compact -offset indent
+.It Pa /tmp/.X11-unix/X Ns Ao Ar NN Ac
+with
+.Ql w
+.Pq connect to the exact nested socket ;
+the
 .Pa /tmp/.X11-unix
-socket directory are additionally unveiled with
-.Ql r
-and
-.Ql rw ,
-respectively.
-.Pa /dev
-is not exposed automatically; list only the devices the application needs.
+directory itself is never exposed.
+.It the application authority file
+with
+.Ql r .
+.It the per-session XDG_RUNTIME_DIR
+with
+.Ql rwxc .
+.El
 .It Ev XSUNABA_DISPLAY
 Starting X display number for
 .Xr Xephyr 1 .
 If the socket
 .Pa /tmp/.X11-unix/X Ns Ao Ar N Ac
 already exists,
-.Nm
-scans upward from this number to find a free display.
+the helper scans upward for a free display.
 Default:
 .Ql :32 .
 .It Ev WIDTH
@@ -126,233 +230,133 @@ display height in pixels.
 Default:
 .Ql 768 .
 .It Ev VERBOSE
-When set to a non-empty value, emits informational messages to standard
-output during setup, application launch, and cleanup.
-Debug messages are written to standard error.
+When set to a non-empty value, emits informational messages.
+Authentication material never appears in the output.
 .El
+.Pp
+A non-empty legacy
+.Ev XSUNABA_PLEDGE
+value is rejected:
+.Xr OpenBSD::Pledge 3p
+does not expose the
+.Fa execpromises
+argument of
+.Xr pledge 2 ,
+so an executed program would not be restricted and any promise
+silently fails to apply.
 .Sh FILES
-.Bl -tag -width "/tmp/Xsunaba-xauth-XXXXXX"
-.It Pa /tmp/Xsunaba-xauth-XXXXXX
-Unique mode-0600 temporary X authority file created for each Xephyr session.
-Contains the magic cookie used to authenticate the application
-connection.
-Its path is passed to the application in
-.Ev XAUTHORITY
-and it is removed during normal cleanup.
-.It Pa /tmp/.X11-unix/
-Directory scanned for existing X11 sockets to find a free display
-number.
-.It Pa /tmp/.Xsunaba-display-UID-N.lock
-Per-user advisory lock used to serialize concurrent allocation of display
-number
-.Ar N .
-.It Pa /usr/bin/openssl
-Used to generate the X11 magic cookie (128-bit random hex string).
-.It Pa /usr/X11R6/bin/xauth
-Used to add the X11 authentication cookie.
+.Bl -tag -width "/var/run/xsunaba/XXXXXXXX.../xephyr/parent-auth"
+.It Pa /usr/local/bin/Xsunaba
+Frontend, run by the invoking user.
+.It Pa /usr/local/libexec/xsunaba-helper
+Root-owned privileged session helper, invoked through
+.Xr doas 1 .
+.It Pa /var/run/xsunaba/
+Root-owned runtime directory (mode 0711), created by the helper.
+.It Pa /var/run/xsunaba/ Ns Ar random Ns Pa /xephyr/
+Session directory of the Xephyr account (mode 0700).
+.It Pa .../xephyr/parent-auth
+Parent-display MIT-MAGIC-COOKIE-1 records for Xephyr (mode 0600,
+owned by
+.Sy _xsunaba_xephyr ) .
+.It Pa .../xephyr/server-auth
+Nested-display server cookie for Xephyr
+.Fl auth
+(mode 0600, owned by
+.Sy _xsunaba_xephyr ) .
+.It Pa .../app/
+Session directory of the application account (mode 0700).
+.It Pa .../app/client-auth
+Nested-display client cookie (mode 0600, owned by
+.Sy _xsunaba_app ) .
+.It Pa .../app/run/
+Per-session
+.Ev XDG_RUNTIME_DIR
+(mode 0700).
+.It Pa /tmp/.X11-unix/X Ns Ao Ar NN Ac
+Nested X11 socket, tightened to mode 0660
+.Sy _xsunaba_xephyr:_xsunaba .
 .It Pa /usr/X11R6/bin/Xephyr
 The nested X server executable.
 .El
+.Pp
+The invoking user owns none of the authority files and has no read
+permission on them.
+Nothing security-sensitive is stored in
+.Pa /tmp .
 .Sh EXIT STATUS
 .Ex -std
-.Pp
-If no command is provided, the usage message is printed to standard
-error and the exit status is 255.
+The exit status of the application is propagated (signal deaths are
+reported as 128 plus the signal number).
 .Sh EXAMPLES
 Launch Firefox with filesystem restrictions:
 .Bd -literal -offset indent
-$ XSUNABA_UNVEIL="/usr/local/bin/firefox:rx,/usr/local/lib/firefox:rx,/tmp:rwc,/etc:r" \e
-  Xsunaba firefox --private-window
+$ XSUNABA_UNVEIL="/usr/local/bin/firefox:rx,/tmp:rwc,/etc:r,/dev:r,\e
+  /home/_xsunaba_app/.mozilla:rwc" Xsunaba firefox
 .Ed
 .Pp
 Run xterm with minimal access, verbose output enabled:
 .Bd -literal -offset indent
-$ VERBOSE=1 \e
-  XSUNABA_UNVEIL="/usr/X11R6/bin/xterm:rx,/tmp:rwc,/etc:r" \e
+$ VERBOSE=1 XSUNABA_UNVEIL="/usr/X11R6/bin/xterm:rx,/tmp:rwc,/etc:r" \e
   Xsunaba xterm
-.Ed
-.Pp
-Use Xsunaba as a Perl module for a custom launcher (no Xephyr):
-.Bd -literal -offset indent
-#!/usr/bin/perl
-require '/usr/local/bin/Xsunaba';
-
-Xsunaba::sandbox(
-    app    => 'xterm',
-    unveil => [
-        '/usr/X11R6/bin/xterm:rx',
-        '/tmp:rwc',
-        '/etc:r',
-    ],
-);
-.Ed
-.Pp
-Use the low-level API to restrict the current Perl process:
-.Bd -literal -offset indent
-#!/usr/bin/perl
-require '/usr/local/bin/Xsunaba';
-
-Xsunaba::unveil('/usr/share/dict/words', 'r');
-Xsunaba::unveil_lock();
-Xsunaba::pledge('stdio rpath');
-
-open my $fh, '<', '/usr/share/dict/words' or die "open: $!";
-print while <$fh>;
-.Ed
-.Pp
-Override the default promises for the low-level helper:
-.Bd -literal -offset indent
-#!/usr/bin/perl
-require '/usr/local/bin/Xsunaba';
-$Xsunaba::PLEDGE_PROMISES = 'stdio rpath inet dns';
-Xsunaba::pledge();
 .Ed
 .Pp
 Launch a sandbox on a custom display with custom geometry:
 .Bd -literal -offset indent
 $ XSUNABA_DISPLAY=":40" WIDTH=1280 HEIGHT=900 Xsunaba gimp
 .Ed
+.Pp
+Use Xsunaba as a Perl module:
+.Bd -literal -offset indent
+#!/usr/bin/perl
+require '/usr/local/bin/Xsunaba';
+
+Xsunaba::launch(
+    app    => '/usr/local/bin/firefox',
+    args   => ['--private-window'],
+    unveil => ['/usr/local/bin/firefox:rx', '/tmp:rwc'],
+);
+.Ed
+.Pp
+The low-level module API
+.Fn pledge ,
+.Fn unveil ,
+.Fn unveil_lock
+and
+.Fn sandbox
+restrict the current Perl process only; they perform no UID
+transitions and start no Xephyr.
 .Sh DIAGNOSTICS
 Set
 .Ev VERBOSE
 to a non-empty value to see informational messages:
 .Bd -literal -offset indent
 [INFO] using display :32
+[INFO] session directory /var/run/xsunaba/<random>
 [INFO] Xephyr started (PID 12345)
 [INFO] launched 'firefox' (PID 12346)
-[INFO] stopping Xephyr (PID 12345)
+[INFO] stopped Xephyr (PID 12345)
 [INFO] cleanup complete
 .Ed
 .Pp
-Warnings are always printed; pledge helper and unveil failures on
-.Ox
-are fatal.
-Errors (always printed) indicate fatal conditions such as
-.Ev HOME
-or the host
-.Ev DISPLAY
-not being set, invalid geometry, or Xephyr failing to start.
-.Sh MODULE API
-.Nm
-may be loaded as a Perl module using
-.Cm require :
-.Pp
-.Dl require '/usr/local/bin/Xsunaba';
-.Pp
-The following functions are exported into the
-.Sy Xsunaba
-namespace:
-.Bl -tag -width "unveil_lock()"
-.It Fn pledge $promises
-Invoke
-.Xr pledge 2
-with the given space-separated promise string.
-If
-.Ar $promises
-is
-.Dv undef
-or omitted, the package variable
-.Va $Xsunaba::PLEDGE_PROMISES
-is used as the default.
-No-op on systems other than
-.Ox .
-.It Fn unveil $path $perm
-Invoke
-.Xr unveil 2
-for
-.Ar $path
-with permission
-.Ar $perm
-(default
-.Ql r ) .
-Must be called before
-.Fn unveil_lock .
-No-op on systems other than
-.Ox ,
-or if unveil is already locked.
-.It Fn unveil_lock
-Lock the unveil configuration by calling
-.Fn unveil
-with two
-.Dv NULL
-arguments.
-After this call, the filesystem is restricted to the set of paths
-announced with
-.Fn unveil ,
-and no further unveil calls are permitted.
-No-op on systems other than
-.Ox .
-.It Fn sandbox %opts
-Convenience wrapper that applies unveil, then
-.Xr exec 3 Ns s
-the application directly (no
-.Xr Xephyr 1 ) .
-Accepts the following keys:
-.Bl -tag -width "unveil" -compact -offset indent
-.It Cm app
-Executable to run (required).
-.It Cm args
-Array reference of command-line arguments.
-.It Cm unveil
-Array reference of
-.Ql path:perm
-strings.
-.It Cm lock
-Boolean controlling whether
-.Fn unveil_lock
-is called automatically.
-Defaults to true when
-.Cm unveil
-entries exist.
-.El
-.It Fn launch %opts
-Full sandbox launcher: starts
-.Xr Xephyr 1 ,
-forks the application with optional unveil restrictions, waits for the
-application to exit, then stops Xephyr and removes the X11
-authentication cookie.
-Accepts the following keys:
-.Bl -tag -width "display" -compact -offset indent
-.It Cm app
-Executable to run (required).
-.It Cm args
-Array reference of command-line arguments.
-.It Cm display
-X display number (default
-.Ql :32 ) .
-.It Cm width
-Xephyr width in pixels (default
-.Ql 1024 ) .
-.It Cm height
-Xephyr height in pixels (default
-.Ql 768 ) .
-.It Cm unveil
-Array reference of
-.Ql path:perm
-strings.
-.El
-.El
-.Ss Package variables
-.Bl -tag -width "PLEDGE_PROMISES"
-.It Va $Xsunaba::PLEDGE_PROMISES
-Default pledge promise string used by
-.Fn pledge
-when no explicit promise string is provided.
-Default:
-.Ql stdio rpath wpath cpath fattr proc exec inet dns unix tty .
-Set this variable before calling
-.Fn pledge
-to override its default.
-.El
+Errors (always printed) indicate fatal conditions such as a missing
+or non-local parent
+.Ev DISPLAY ,
+an unreadable or unowned parent X authority,
+missing sandbox accounts,
+an invalid application path,
+Xephyr failing to start,
+or a failed privilege drop.
+All such conditions fail closed and clean up the session.
 .Sh SEE ALSO
-.Xr openssl 1 ,
+.Xr doas 1 ,
 .Xr perl 1 ,
-.Xr xauth 1 ,
 .Xr Xephyr 1 ,
 .Xr pledge 2 ,
 .Xr unveil 2 ,
-.Xr exec 3 ,
-.Xr X 7
+.Xr doas.conf 5 ,
+.Xr X 7 ,
+.Xr sndiod 8
 .Sh HISTORY
 .Nm
 is based on a script by
@@ -370,33 +374,41 @@ rewrote it in Perl
 .Pq 2025
 and added unveil integration with Xephyr display isolation
 .Pq 2026 .
+The same-UID design (in which the login user could read the nested
+cookie files and the application inherited the login UID) was
+replaced in 2026 by dedicated
+.Sy _xsunaba_xephyr
+and
+.Sy _xsunaba_app
+accounts, a narrow root helper, split authority files, socket
+permission tightening, and rebuilt environments.
 .Sh CAVEATS
 .Bl -bullet
 .It
-Xephyr graphics acceleration depends on the X server build and host
-configuration; a specific renderer must not be assumed.
+Xephyr is a client of the parent X server and is not a complete
+security boundary; see
+.Sx DESCRIPTION .
 .It
-There is no window manager inside the Xephyr display.
-Applications run full-screen at the configured resolution.
-If your application needs a session script, wrap it in a shell script
-and pass that script as the command.
+Separate
+.Nm
+invocations share the sandbox accounts and are not mutually
+isolated: an application in one session can read another session's
+application-side authority file and shared home directory.
+.It
+The parent X socket must permit connections from the
+.Sy _xsunaba_xephyr
+account; the default mode 0777 does.
+.It
+The application cannot play audio through
+.Xr sndiod 8
+unless the administrator shares the sndio cookie with the sandbox
+account.
+.It
+There is no window manager inside the Xephyr display; applications
+run full-screen at the configured resolution.
 .It
 .Nm
-does not create a separate user account or use
-.Xr doas 1 .
-The application runs as your user, with only the configured unveil
-filesystem restriction.
-For additional user-based isolation, wrap the application with
-.Xr doas 1
-yourself or use the pre-2026 version of
-.Nm
-which included user sandboxing.
-.It
-.Nm
-is a mitigation, not a guarantee.
-A determined attacker who compromises the application may still find
-ways to escape the sandbox.
-Combine it with other
+is a mitigation, not a guarantee; combine it with other
 .Ox
 security practices.
 .El
