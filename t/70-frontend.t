@@ -30,9 +30,9 @@ is_deeply(
         '--width',          '1280',
         '--height',         '900',
         '--unveil',         '/tmp:rwc,/etc:r',
-        '--verbose',
-        '--',
-        '/usr/bin/xterm', '-e', 'true',
+        '--verbose',        '--',
+        '/usr/bin/xterm',   '-e',
+        'true',
     ],
     'helper argv exact',
 );
@@ -40,12 +40,15 @@ is_deeply(
 @argv = Xsunaba::build_helper_argv(
     parent_display => ':0',
     parent_xauth   => '/home/u/.Xauthority',
-    app_argv       => [ '/bin/true' ],
+    app_argv       => ['/bin/true'],
 );
 is_deeply(
     \@argv,
-    [ '--parent-display', ':0', '--parent-xauth', '/home/u/.Xauthority',
-      '--', '/bin/true' ],
+    [
+        '--parent-display', ':0',
+        '--parent-xauth',   '/home/u/.Xauthority',
+        '--',               '/bin/true'
+    ],
     'minimal helper argv',
 );
 
@@ -53,19 +56,23 @@ is_deeply(
     parent_display => ':0',
     parent_xauth   => '/home/u/.Xauthority',
     amnesiac       => 1,
-    app_argv       => [ '/bin/true' ],
+    app_argv       => ['/bin/true'],
 );
 is_deeply(
     \@argv,
-    [ '--parent-display', ':0', '--parent-xauth', '/home/u/.Xauthority',
-      '--amnesiac', '--', '/bin/true' ],
+    [
+        '--parent-display', ':0',
+        '--parent-xauth',   '/home/u/.Xauthority',
+        '--amnesiac',       '--',
+        '/bin/true'
+    ],
     'amnesiac flag passed before --',
 );
 
 # --- Frontend validation and end-to-end argv -----------------------
 # CLEANUP disabled: the forked children inherit the tempdir object and
 # must not delete it on their own exit.
-my $dir = tempdir( CLEANUP => 0 );
+my $dir   = tempdir( CLEANUP => 0 );
 my $xauth = "$dir/xauth";
 open my $fh, '>', $xauth or die $!;
 print {$fh} "placeholder";
@@ -75,9 +82,11 @@ my %base_env = %ENV;
 
 {
     local %ENV = %base_env;
-    delete @ENV{qw(DISPLAY XAUTHORITY XSUNABA_PLEDGE
-        XSUNABA_UNVEIL XSUNABA_DISPLAY WIDTH HEIGHT VERBOSE
-        XSUNABA_VERBOSE)};
+    delete @ENV{
+        qw(DISPLAY XAUTHORITY XSUNABA_PLEDGE
+          XSUNABA_UNVEIL XSUNABA_DISPLAY WIDTH HEIGHT VERBOSE
+          XSUNABA_VERBOSE)
+    };
     $ENV{HOME} = $dir;
     eval { Xsunaba::launch( app => '/bin/true' ) };
     like( $@, qr/DISPLAY not set/ms, 'no DISPLAY is rejected' );
@@ -85,19 +94,23 @@ my %base_env = %ENV;
 
 {
     local %ENV = %base_env;
-    delete @ENV{qw(DISPLAY XAUTHORITY HOME XSUNABA_PLEDGE
-        XSUNABA_UNVEIL XSUNABA_DISPLAY WIDTH HEIGHT VERBOSE
-        XSUNABA_VERBOSE)};
+    delete @ENV{
+        qw(DISPLAY XAUTHORITY HOME XSUNABA_PLEDGE
+          XSUNABA_UNVEIL XSUNABA_DISPLAY WIDTH HEIGHT VERBOSE
+          XSUNABA_VERBOSE)
+    };
     eval { Xsunaba::launch( app => '/bin/true' ) };
     like( $@, qr/HOME not set/ms, 'no HOME is rejected' );
 }
 
 {
     local %ENV = %base_env;
-    delete @ENV{qw(XSUNABA_PLEDGE XSUNABA_UNVEIL XSUNABA_DISPLAY
-        WIDTH HEIGHT VERBOSE XSUNABA_VERBOSE)};
-    $ENV{HOME}    = $dir;
-    $ENV{DISPLAY} = ':0';
+    delete @ENV{
+        qw(XSUNABA_PLEDGE XSUNABA_UNVEIL XSUNABA_DISPLAY
+          WIDTH HEIGHT VERBOSE XSUNABA_VERBOSE)
+    };
+    $ENV{HOME}       = $dir;
+    $ENV{DISPLAY}    = ':0';
     $ENV{XAUTHORITY} = $xauth;
 
     my $fake = "$dir/fake-doas";
@@ -142,16 +155,15 @@ FAKE
     is_deeply(
         \@got,
         [
-            $Xsunaba::HELPER,
-            '--parent-display', ':0',
-            '--parent-xauth',   $xauth,
-            '--display',        '40',
-            '--width',          '1280',
-            '--height',         '900',
-            '--unveil',         '/tmp:rwc,/etc:r',
-            '--verbose',
-            '--',
-            '/usr/bin/xterm', '-e', 'true',
+            $Xsunaba::HELPER,  '--parent-display',
+            ':0',              '--parent-xauth',
+            $xauth,            '--display',
+            '40',              '--width',
+            '1280',            '--height',
+            '900',             '--unveil',
+            '/tmp:rwc,/etc:r', '--verbose',
+            '--',              '/usr/bin/xterm',
+            '-e',              'true',
         ],
         'end-to-end argv through doas',
     );
@@ -159,9 +171,9 @@ FAKE
 
 {
     local %ENV = %base_env;
-    $ENV{HOME}    = $dir;
-    $ENV{DISPLAY} = ':0';
-    $ENV{XAUTHORITY} = $xauth;
+    $ENV{HOME}           = $dir;
+    $ENV{DISPLAY}        = ':0';
+    $ENV{XAUTHORITY}     = $xauth;
     $ENV{XSUNABA_PLEDGE} = 'stdio';
     eval { Xsunaba::launch( app => '/bin/true' ) };
     like( $@, qr/execpromises/, 'non-empty XSUNABA_PLEDGE rejected' );
@@ -169,8 +181,8 @@ FAKE
 
 {
     local %ENV = %base_env;
-    $ENV{HOME}    = $dir;
-    $ENV{DISPLAY} = 'hostname:0';
+    $ENV{HOME}       = $dir;
+    $ENV{DISPLAY}    = 'hostname:0';
     $ENV{XAUTHORITY} = $xauth;
     eval { Xsunaba::launch( app => '/bin/true' ) };
     like( $@, qr/Invalid DISPLAY/, 'remote parent display rejected' );
@@ -178,8 +190,8 @@ FAKE
 
 {
     local %ENV = %base_env;
-    $ENV{HOME}    = $dir;
-    $ENV{DISPLAY} = ':0';
+    $ENV{HOME}       = $dir;
+    $ENV{DISPLAY}    = ':0';
     $ENV{XAUTHORITY} = "$dir/nonexistent";
     eval { Xsunaba::launch( app => '/bin/true' ) };
     like( $@, qr/Cannot read Xauthority/, 'missing Xauthority rejected' );
@@ -187,9 +199,9 @@ FAKE
 
 {
     local %ENV = %base_env;
-    $ENV{HOME}    = $dir;
-    $ENV{DISPLAY} = ':0';
-    $ENV{XAUTHORITY} = $xauth;
+    $ENV{HOME}            = $dir;
+    $ENV{DISPLAY}         = ':0';
+    $ENV{XAUTHORITY}      = $xauth;
     $ENV{XSUNABA_DISPLAY} = ':abc';
     eval { Xsunaba::launch( app => '/bin/true' ) };
     like( $@, qr/Invalid display/, 'invalid nested display rejected' );
@@ -197,31 +209,39 @@ FAKE
 
 {
     local %ENV = %base_env;
-    $ENV{HOME}    = $dir;
-    $ENV{DISPLAY} = ':0';
+    $ENV{HOME}       = $dir;
+    $ENV{DISPLAY}    = ':0';
     $ENV{XAUTHORITY} = $xauth;
-    $ENV{WIDTH} = '99999999';
+    $ENV{WIDTH}      = '99999999';
     eval { Xsunaba::launch( app => '/bin/true' ) };
     like( $@, qr/width/, 'oversized width rejected' );
 }
 
 {
     local %ENV = %base_env;
-    $ENV{HOME}    = $dir;
-    $ENV{DISPLAY} = ':0';
+    $ENV{HOME}       = $dir;
+    $ENV{DISPLAY}    = ':0';
     $ENV{XAUTHORITY} = $xauth;
-    eval { Xsunaba::launch( app => '/usr/bin/xterm', display => ':50',
-        width => 1000, height => 800 ) };
+    eval {
+        Xsunaba::launch(
+            app     => '/usr/bin/xterm',
+            display => ':50',
+            width   => 1000,
+            height  => 800
+        );
+    };
     like( $@, qr/exec \/usr\/bin\/doas/, 'real doas missing on Linux' );
 }
 
 # --- Amnesiac end-to-end argv and browser-geometry neutrality -------
 {
     local %ENV = %base_env;
-    delete @ENV{qw(XSUNABA_PLEDGE XSUNABA_UNVEIL XSUNABA_DISPLAY
-        WIDTH HEIGHT VERBOSE XSUNABA_VERBOSE)};
-    $ENV{HOME}    = $dir;
-    $ENV{DISPLAY} = ':0';
+    delete @ENV{
+        qw(XSUNABA_PLEDGE XSUNABA_UNVEIL XSUNABA_DISPLAY
+          WIDTH HEIGHT VERBOSE XSUNABA_VERBOSE)
+    };
+    $ENV{HOME}       = $dir;
+    $ENV{DISPLAY}    = ':0';
     $ENV{XAUTHORITY} = $xauth;
 
     my $fake = "$dir/fake-doas-amnesiac";
@@ -248,7 +268,7 @@ FAKE
         Xsunaba::launch(
             amnesiac => 1,
             app      => '/usr/local/bin/firefox',
-            args     => [ '--private-window' ],
+            args     => ['--private-window'],
             width    => 1100,
             height   => 700,
         );
@@ -264,15 +284,14 @@ FAKE
     is_deeply(
         \@got,
         [
-            $Xsunaba::HELPER,
-            '--parent-display', ':0',
-            '--parent-xauth',   $xauth,
-            '--display',        '32',
-            '--width',          '1100',
-            '--height',         '700',
-            '--amnesiac',
-            '--',
-            '/usr/local/bin/firefox', '--private-window',
+            $Xsunaba::HELPER, '--parent-display',
+            ':0',             '--parent-xauth',
+            $xauth,           '--display',
+            '32',             '--width',
+            '1100',           '--height',
+            '700',            '--amnesiac',
+            '--',             '/usr/local/bin/firefox',
+            '--private-window',
         ],
         'amnesiac argv exact; no browser geometry hacks appended',
     );

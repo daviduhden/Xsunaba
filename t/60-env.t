@@ -20,16 +20,16 @@ my @forbidden = qw(
 
 my %dirty = (
     ( map { $_ => "hostile-value-$_" } @forbidden ),
-    TERM   => 'xterm',
-    TZ     => 'Europe/Madrid',
-    LANG   => 'C.UTF-8',
-    LC_ALL => '',
-    DISPLAY   => ':0',
-    HOME      => '/home/user',
-    USER      => 'user',
-    LOGNAME   => 'user',
-    SHELL     => '/bin/ksh',
-    PATH      => '/evil/bin',
+    TERM    => 'xterm',
+    TZ      => 'Europe/Madrid',
+    LANG    => 'C.UTF-8',
+    LC_ALL  => '',
+    DISPLAY => ':0',
+    HOME    => '/home/user',
+    USER    => 'user',
+    LOGNAME => 'user',
+    SHELL   => '/bin/ksh',
+    PATH    => '/evil/bin',
 );
 my $passthru = Xsunaba::Helper::_passthrough( \%dirty );
 
@@ -48,20 +48,29 @@ my @expected = qw(
   XDG_RUNTIME_DIR TERM TZ LANG
 );
 my @keys = sort keys %$env;
-is_deeply( \@keys, [ sort @expected ], 'app environment is exactly the whitelist' );
+is_deeply(
+    \@keys,
+    [ sort @expected ],
+    'app environment is exactly the whitelist'
+);
 
-is( $env->{DISPLAY},    ':32', 'app DISPLAY is the nested display' );
-is( $env->{XAUTHORITY}, '/var/run/xsunaba/s/app/client-auth',
-    'app XAUTHORITY is its own client-auth' );
-is( $env->{HOME}, '/home/_xsunaba_app', 'app HOME is the sandbox home' );
-is( $env->{USER}, '_xsunaba_app', 'app USER is the sandbox account' );
+is( $env->{DISPLAY}, ':32', 'app DISPLAY is the nested display' );
+is(
+    $env->{XAUTHORITY},
+    '/var/run/xsunaba/s/app/client-auth',
+    'app XAUTHORITY is its own client-auth'
+);
+is( $env->{HOME},    '/home/_xsunaba_app', 'app HOME is the sandbox home' );
+is( $env->{USER},    '_xsunaba_app',       'app USER is the sandbox account' );
 is( $env->{LOGNAME}, '_xsunaba_app', 'app LOGNAME is the sandbox account' );
-is( $env->{XDG_RUNTIME_DIR}, '/var/run/xsunaba/s/app/run',
-    'runtime dir is session private' );
+is( $env->{XDG_RUNTIME_DIR},
+    '/var/run/xsunaba/s/app/run', 'runtime dir is session private' );
 is( $env->{TZ}, 'Europe/Madrid', 'TZ passed through' );
 ok( !exists $env->{LC_ALL}, 'empty passthrough values dropped' );
-ok( !exists $env->{DISPLAY} || $env->{DISPLAY} ne ':0',
-    'parent display never in app environment' );
+ok(
+    !exists $env->{DISPLAY} || $env->{DISPLAY} ne ':0',
+    'parent display never in app environment'
+);
 
 for my $v (@forbidden) {
     ok( !exists $env->{$v}, "forbidden variable absent: $v" );
@@ -76,14 +85,23 @@ $env = Xsunaba::Helper::build_xephyr_env(
     passthru   => $passthru,
 );
 @keys = sort keys %$env;
-is_deeply( \@keys, [ sort qw(PATH HOME DISPLAY XAUTHORITY TERM TZ LANG) ],
-    'Xephyr environment is minimal' );
+is_deeply(
+    \@keys,
+    [ sort qw(PATH HOME DISPLAY XAUTHORITY TERM TZ LANG) ],
+    'Xephyr environment is minimal'
+);
 is( $env->{DISPLAY}, ':0', 'Xephyr DISPLAY is the parent display' );
-is( $env->{XAUTHORITY}, '/var/run/xsunaba/s/xephyr/parent-auth',
-    'Xephyr gets only the extracted parent authority' );
-ok( $env->{XAUTHORITY} ne '/var/run/xsunaba/s/app/client-auth',
-    'Xephyr never receives the application authority' );
+is(
+    $env->{XAUTHORITY},
+    '/var/run/xsunaba/s/xephyr/parent-auth',
+    'Xephyr gets only the extracted parent authority'
+);
+ok(
+    $env->{XAUTHORITY} ne '/var/run/xsunaba/s/app/client-auth',
+    'Xephyr never receives the application authority'
+);
 ok( !exists $env->{XDG_RUNTIME_DIR}, 'no runtime dir for Xephyr' );
+
 for my $v (@forbidden) {
     ok( !exists $env->{$v}, "forbidden variable absent (Xephyr): $v" );
 }

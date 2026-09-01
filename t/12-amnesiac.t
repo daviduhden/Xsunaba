@@ -11,7 +11,7 @@ use TestHelper qw(dies_ok lives_ok);
 require "$FindBin::Bin/../libexec/xsunaba-helper";
 
 # --- Account name generation ---------------------------------------
-my $name = Xsunaba::Helper::gen_account_name( 'a1b2c3d4e5f60718' );
+my $name = Xsunaba::Helper::gen_account_name('a1b2c3d4e5f60718');
 is( $name, '_xsunaba_a1b2c3d4e5f60718', 'account name derived' );
 ok( length($name) <= 31, 'fits OpenBSD login name limit' );
 like( $name, qr/\A[a-z_][a-z0-9_-]*\z/, 'valid login name charset' );
@@ -23,9 +23,8 @@ qr/token/, 'uppercase token rejected';
 dies_ok { Xsunaba::Helper::gen_account_name( 'a' x 16 . '/' ) }
 qr/token/, 'traversal token rejected';
 
-my %uniq = map { Xsunaba::Helper::gen_account_name($_) => 1 } (
-    '0000000000000001', '0000000000000002', '0000000000000003',
-);
+my %uniq = map { Xsunaba::Helper::gen_account_name($_) => 1 }
+  ( '0000000000000001', '0000000000000002', '0000000000000003', );
 is( scalar keys %uniq, 3, 'distinct tokens give distinct accounts' );
 
 # --- Home derivation ------------------------------------------------
@@ -72,8 +71,8 @@ ok(
 );
 ok(
     !Xsunaba::Helper::home_safe_to_delete(
-        '/var/xsunaba/home/../home/_xsunaba_0000000000000001',
-        $user, 55555, $lstat_ok,
+        '/var/xsunaba/home/../home/_xsunaba_0000000000000001', $user,
+        55555,                                                 $lstat_ok,
     ),
     'traversal path rejected',
 );
@@ -81,16 +80,19 @@ ok(
 # missing: unsafe
 my $lstat_missing = sub { return () };
 ok(
-    !Xsunaba::Helper::home_safe_to_delete( $home, $user, 55555,
-        $lstat_missing ),
+    !Xsunaba::Helper::home_safe_to_delete(
+        $home, $user, 55555, $lstat_missing
+    ),
     'missing path rejected',
 );
 
 # --- Account command argv -------------------------------------------
 is_deeply(
     [ Xsunaba::Helper::build_useradd_argv( $user, $home ) ],
-    [ '/usr/sbin/useradd', '-d', $home, '-g', '=uid',
-      '-s', '/sbin/nologin', $user ],
+    [
+        '/usr/sbin/useradd', '-d', $home,           '-g',
+        '=uid',              '-s', '/sbin/nologin', $user
+    ],
     'useradd argv: no shell, private group, nologin, recorded home',
 );
 is_deeply(
@@ -117,20 +119,21 @@ qr/uid/, 'shell metacharacters rejected for pkill';
 
 # --- Argument parsing ------------------------------------------------
 my $base = [ '--parent-display', ':0', '--parent-xauth', '/x' ];
-my $o = Xsunaba::Helper::parse_args( @$base, '--', '/bin/true' );
+my $o    = Xsunaba::Helper::parse_args( @$base, '--', '/bin/true' );
 ok( !$o->{amnesiac}, 'amnesiac defaults off' );
 $o = Xsunaba::Helper::parse_args( @$base, '--amnesiac', '--', '/bin/true' );
 ok( $o->{amnesiac}, '--amnesiac parsed' );
 
 # --- Stale-session identification patterns ---------------------------
-for my $bad ( '..', '.', 'x' x 31 . 'x', '_xsunaba_zzzzzzzzzzzzzzzz',
-    '0000000000000000000000000000000X' ) {
+for my $bad ( '..', '.', 'x' x 31 . 'x',
+    '_xsunaba_zzzzzzzzzzzzzzzz', '0000000000000000000000000000000X' )
+{
     like( '', qr//, 'no-op' );    # keep plan alignment simple
 }
 my $ok_token   = '0123456789abcdef0123456789abcdef';
 my $bad_tokens = [
-    '..', '.', '0123456789abcdef0123456789abcde',
-    '0123456789abcdef0123456789abcdef0',
+    '..',                              '.',
+    '0123456789abcdef0123456789abcde', '0123456789abcdef0123456789abcdef0',
     'X123456789abcdef0123456789abcdef',
 ];
 for my $t (@$bad_tokens) {

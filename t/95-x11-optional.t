@@ -26,7 +26,7 @@ unless ( defined $display && length $display && -x $tool ) {
       'set XSUNABA_TEST_DISPLAY and build tools/ to run X11 tests';
 }
 my @xdotool = qw(xdotool);
-my $probe = `xdotool version 2>&1`;
+my $probe   = `xdotool version 2>&1`;
 if ( $? != 0 ) {
     plan skip_all => 'xdotool not available';
 }
@@ -34,7 +34,7 @@ if ( $? != 0 ) {
 my $pid = fork();
 die "fork: $!" unless defined $pid;
 if ( $pid == 0 ) {
-    open STDIN,  '<', '/dev/null' or die $!;
+    open STDIN, '<', '/dev/null' or die $!;
     open STDOUT, '>', "$FindBin::Bin/../tools/popup-grab-test.log"
       or die $!;
     open STDERR, '>&', \*STDOUT or die $!;
@@ -52,10 +52,12 @@ if ( !length $win ) {
 }
 
 my $ok = 1;
+
 # click the menu bar (top 40 rows of a 640x480 window at 0,0)
 $ok &&= system( @xdotool, 'mousemove', '--sync', '100', '20' ) == 0;
 $ok &&= system( @xdotool, 'click', '1' ) == 0;
 sleep 1;
+
 # popup appears at x=92,y=40; click every item center
 for my $i ( 0 .. 4 ) {
     my $x = 92 + 60;
@@ -80,8 +82,8 @@ my $log = do { local $/; <$fh> };
 close $fh;
 
 is( $status >> 8, 0, 'popup-grab-test exited 0 (all items clicked)' );
-like( $log, qr/pointer grabbed/, 'pointer grab succeeded' );
-like( $log, qr/motion in popup/, 'grab received motion events' );
+like( $log, qr/pointer grabbed/,   'pointer grab succeeded' );
+like( $log, qr/motion in popup/,   'grab received motion events' );
 like( $log, qr/all items clicked/, 'all items clicked' );
 
 done_testing;

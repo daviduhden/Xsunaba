@@ -7,10 +7,10 @@ use FindBin;
 
 require "$FindBin::Bin/../libexec/xsunaba-helper";
 
-my $socket     = '/tmp/.X11-unix/X32';
+my $socket      = '/tmp/.X11-unix/X32';
 my $client_auth = '/var/run/xsunaba/deadbeef/app/client-auth';
 my $runtime     = '/var/run/xsunaba/deadbeef/app/run';
-my $user = [ '/tmp:rwc', '/etc:r', '/usr/local/bin/firefox:rx' ];
+my $user        = [ '/tmp:rwc', '/etc:r', '/usr/local/bin/firefox:rx' ];
 
 my $entries = Xsunaba::Helper::build_unveil_entries(
     socket_path  => $socket,
@@ -26,8 +26,10 @@ is_deeply(
 );
 
 # The whole socket directory must never be exposed
-ok( !( grep { $_ =~ m{\A/tmp/\.X11-unix:} } @$entries ),
-    'socket directory itself is not unveiled' );
+ok(
+    !( grep { $_ =~ m{\A/tmp/\.X11-unix:} } @$entries ),
+    'socket directory itself is not unveiled'
+);
 ok( !( grep { $_ eq '/tmp/.X11-unix' } @$entries ),
     'socket directory path absent' );
 
@@ -39,8 +41,10 @@ is_deeply( \@sockets, ["$socket:w"], 'only the exact nested socket' );
 my $parent_auth = '/var/run/xsunaba/deadbeef/xephyr/parent-auth';
 my $server_auth = '/var/run/xsunaba/deadbeef/xephyr/server-auth';
 for my $secret ( $parent_auth, $server_auth ) {
-    ok( !( grep { $_ =~ /\A\Q$secret\E:/ } @$entries ),
-        "Xephyr authority file not unveiled: $secret" );
+    ok(
+        !( grep { $_ =~ /\A\Q$secret\E:/ } @$entries ),
+        "Xephyr authority file not unveiled: $secret"
+    );
 }
 
 # Empty user configuration still yields the mandatory entries
@@ -50,7 +54,10 @@ $entries = Xsunaba::Helper::build_unveil_entries(
     runtime_dir  => $runtime,
     user_entries => [],
 );
-is_deeply( $entries, [ "$socket:w", "$client_auth:r", "$runtime:rwxc" ],
-    'mandatory entries without user configuration' );
+is_deeply(
+    $entries,
+    [ "$socket:w", "$client_auth:r", "$runtime:rwxc" ],
+    'mandatory entries without user configuration'
+);
 
 done_testing;

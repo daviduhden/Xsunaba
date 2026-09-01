@@ -15,7 +15,7 @@ open my $fh, '<', $helper or die $!;
 my $src = do { local $/; <$fh> };
 close $fh;
 
-my @out = grep { /\b(_inf|_wrn|_err|_dbg)\b/ } split /\n/, $src;
+my @out        = grep { /\b(_inf|_wrn|_err|_dbg)\b/ } split /\n/, $src;
 my $violations = 0;
 for my $line (@out) {
     next if $line =~ /^\s*sub\b/;
@@ -25,11 +25,7 @@ is( $violations, 0, 'no output call references the cookie' );
 
 # The cookie is only ever written into authority files; it must never
 # be part of the helper's argument interface.
-unlike(
-    $src,
-    qr/--cookie/,
-    'no --cookie argument exists',
-);
+unlike( $src, qr/--cookie/, 'no --cookie argument exists', );
 
 # Messages emitted during a session reference only the display number
 # and session directory, never authentication material.
@@ -53,7 +49,7 @@ my $out;
     select($old);
     close $cap;
 }
-unlike( $out, qr/$cookie/, 'cookie never in info output' );
+unlike( $out, qr/$cookie/,      'cookie never in info output' );
 unlike( $out, qr/[0-9a-f]{32}/, 'no 32-hex token in info output' );
 like( $out, qr/display :32/, 'display message present' );
 

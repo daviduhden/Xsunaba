@@ -6,7 +6,7 @@ use Test::More;
 use FindBin;
 
 my @checks = (
-    [ "$FindBin::Bin/../bin/Xsunaba.pl",       '' ],
+    [ "$FindBin::Bin/../bin/Xsunaba.pl",         '' ],
     [ "$FindBin::Bin/../libexec/xsunaba-helper", '-T' ],
 );
 
