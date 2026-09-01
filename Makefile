@@ -42,7 +42,7 @@ install: ${PROG_PATH} ${HELPER_PATH} ${MAN_PATH}
 	@echo "${INFO} Installing helper -> ${LIBEXECDIR}/${HELPER}" && \
 		mkdir -p ${LIBEXECDIR} && \
 		install -o root -g wheel -m755 ${HELPER_PATH} \
-			${LIBEXECDIR}/${HELPER}
+		${LIBEXECDIR}/${HELPER}
 	@echo "${INFO} Installing man page -> ${MANDIR}/${PROG}.${SECTION}" && \
 		mkdir -p ${MANDIR} && \
 		install -o root -g wheel -m444 ${MAN_PATH} ${MANDIR}
@@ -57,12 +57,12 @@ install-users:
 		groupadd ${APP_GROUP}
 	@id ${APP_USER} >/dev/null 2>&1 || \
 		useradd -c 'Xsunaba sandbox application' \
-			-d ${APP_HOME} -g ${APP_GROUP} -m \
-			-s ${APP_SHELL} ${APP_USER}
+		-d ${APP_HOME} -g ${APP_GROUP} -m \
+		-s ${APP_SHELL} ${APP_USER}
 	@id ${XEPHYR_USER} >/dev/null 2>&1 || \
 		useradd -c 'Xsunaba Xephyr server' \
-			-d /nonexistent -g =uid \
-			-s /sbin/nologin ${XEPHYR_USER}
+		-d /nonexistent -g =uid \
+		-s /sbin/nologin ${XEPHYR_USER}
 	@echo "${INFO} Accounts ${APP_USER}, ${XEPHYR_USER} and group"
 	@echo "${INFO} ${APP_GROUP} are ready (home: ${APP_HOME})"
 

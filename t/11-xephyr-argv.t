@@ -17,15 +17,15 @@ my @argv = Xsunaba::Helper::build_xephyr_argv(
 my %count;
 $count{$_}++ for @argv;
 
-is( $count{'-resizeable'},  1, 'exactly one -resizeable' );
+is( $count{'-resizeable'},   1, 'exactly one -resizeable' );
 is( $count{'-no-host-grab'}, 1, 'exactly one -no-host-grab' );
 is( $count{'-nolisten'},     1, 'exactly one -nolisten' );
 is( $count{'-noreset'},      1, 'exactly one -noreset' );
 is( $count{'-br'},           1, 'exactly one -br' );
 is( $count{'-screen'},       1, 'exactly one -screen' );
 is( $count{'-auth'},         1, 'exactly one -auth' );
-ok( !$count{'-ac'}, 'no -ac' );
-ok( !$count{'-listen'}, 'no -listen' );
+ok( !$count{'-ac'},          'no -ac' );
+ok( !$count{'-listen'},      'no -listen' );
 ok( !$count{'-host-cursor'}, 'no explicit -host-cursor' );
 
 is( $argv[0], '/usr/X11R6/bin/Xephyr', 'Xephyr path first' );
@@ -48,7 +48,9 @@ is( $argv[ $si + 1 ], '1280x900', '-screen carries initial geometry' );
 for my $geom ( [ 1024, 768, '1024x768' ], [ 640, 480, '640x480' ] ) {
     my ( $w, $h, $expect ) = @$geom;
     my @a = Xsunaba::Helper::build_xephyr_argv(
-        display => ':1', width => $w, height => $h,
+        display     => ':1',
+        width       => $w,
+        height      => $h,
         server_auth => '/x',
     );
     my $i = 0;

@@ -4,7 +4,7 @@ package Xsunaba;
 
 use strict;
 use warnings;
-use Exporter   qw(import);
+use Exporter qw(import);
 
 our @EXPORT_OK   = qw(pledge unveil unveil_lock sandbox launch);
 our %EXPORT_TAGS = ( all => \@EXPORT_OK );
@@ -43,7 +43,7 @@ sub unveil {
     my ( $path, $perm ) = @_;
     $perm //= 'r';
     unless ( $^O eq 'openbsd' ) { _dbg "unveil: not on OpenBSD"; return 1 }
-    if ($UNVEIL_LOCKED) {
+    if     ($UNVEIL_LOCKED) {
         _wrn "unveil($path): already locked";
         return;
     }
@@ -75,7 +75,7 @@ sub sandbox {
 
     if (
         (
-            exists $opts{pledge}
+               exists $opts{pledge}
             && defined $opts{pledge}
             && $opts{pledge} ne ''
         )
@@ -126,14 +126,14 @@ sub build_helper_argv {
     my @argv;
     push @argv, '--parent-display', $o{parent_display};
     push @argv, '--parent-xauth',   $o{parent_xauth};
-    push @argv, '--display', $o{display} if defined $o{display};
-    push @argv, '--width',   $o{width}   if defined $o{width};
-    push @argv, '--height',  $o{height}  if defined $o{height};
+    push @argv, '--display',        $o{display} if defined $o{display};
+    push @argv, '--width',          $o{width}   if defined $o{width};
+    push @argv, '--height',         $o{height}  if defined $o{height};
     if ( defined $o{unveil} && length $o{unveil} ) {
         push @argv, '--unveil', $o{unveil};
     }
     push @argv, '--amnesiac' if $o{amnesiac};
-    push @argv, '--verbose' if $o{verbose};
+    push @argv, '--verbose'  if $o{verbose};
     push @argv, '--';
     push @argv, @{ $o{app_argv} // [] };
     return @argv;
@@ -142,7 +142,7 @@ sub build_helper_argv {
 sub _valid_number {
     my ( $what, $value, $max ) = @_;
     $value =~ /\A[1-9][0-9]*\z/ or die "Invalid $what '$value'";
-    $value <= $max or die "$what must be in 1..$max";
+    $value <= $max              or die "$what must be in 1..$max";
     return $value;
 }
 
@@ -151,7 +151,7 @@ sub launch {
 
     if (
         (
-            exists $opts{pledge}
+               exists $opts{pledge}
             && defined $opts{pledge}
             && $opts{pledge} ne ''
         )
@@ -209,7 +209,7 @@ sub launch {
         width          => $width,
         height         => $height,
         unveil         => $unveil,
-        amnesiac       => $opts{amnesiac} ? 1 : 0,
+        amnesiac       => $opts{amnesiac}                            ? 1 : 0,
         verbose        => ( $ENV{VERBOSE} || $ENV{XSUNABA_VERBOSE} ) ? 1 : 0,
         app_argv       => [ $app, @app_args ],
     );
@@ -218,7 +218,7 @@ sub launch {
     # fail closed if the frontend itself cannot be restricted.
     if ( $^O eq 'openbsd' ) {
         require OpenBSD::Pledge;
-        OpenBSD::Pledge::pledge( 'stdio exec' )
+        OpenBSD::Pledge::pledge('stdio exec')
           or die "pledge: $!";
     }
 

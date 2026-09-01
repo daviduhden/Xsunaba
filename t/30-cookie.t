@@ -23,7 +23,7 @@ sub rng_file {
 }
 
 # Cookie format
-my $fh = rng_file( join '', map { chr( int rand 256 ) } 1 .. 32 );
+my $fh     = rng_file( join '', map { chr( int rand 256 ) } 1 .. 32 );
 my $cookie = Xsunaba::Helper::gen_cookie($fh);
 like( $cookie, qr/\A[0-9a-f]{32}\z/, 'cookie is 32 lowercase hex chars' );
 
