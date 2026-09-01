@@ -4,7 +4,6 @@ package Xsunaba;
 
 use strict;
 use warnings;
-use File::Basename;
 use Exporter   qw(import);
 
 our @EXPORT_OK   = qw(pledge unveil unveil_lock sandbox launch);
@@ -133,6 +132,7 @@ sub build_helper_argv {
     if ( defined $o{unveil} && length $o{unveil} ) {
         push @argv, '--unveil', $o{unveil};
     }
+    push @argv, '--amnesiac' if $o{amnesiac};
     push @argv, '--verbose' if $o{verbose};
     push @argv, '--';
     push @argv, @{ $o{app_argv} // [] };
@@ -198,16 +198,10 @@ sub launch {
         $unveil = $ENV{XSUNABA_UNVEIL};
     }
 
-    # Geometry hacks for known browsers.
-    my $base = basename($app);
-    if ( $base =~ /(?:^|-)chrome$/ || $base =~ /chromium/ ) {
-        push @app_args, "--window-size=${width},${height}",
-          '--window-position=0,0';
-    }
-    elsif ( $base =~ /firefox/ ) {
-        push @app_args, '-width', $width, '-height', $height;
-    }
-
+    # The browser window geometry is deliberately left to the
+    # application: forced exact-fit sizes fight the resizable Xephyr
+    # window and push popup anchors onto the screen edges, which is
+    # where menu selection problems show up.
     my @argv = build_helper_argv(
         parent_display => $parent_display,
         parent_xauth   => $parent_xauth,
@@ -215,6 +209,7 @@ sub launch {
         width          => $width,
         height         => $height,
         unveil         => $unveil,
+        amnesiac       => $opts{amnesiac} ? 1 : 0,
         verbose        => ( $ENV{VERBOSE} || $ENV{XSUNABA_VERBOSE} ) ? 1 : 0,
         app_argv       => [ $app, @app_args ],
     );
@@ -236,11 +231,18 @@ package main;
 unless (caller) {
     $ENV{XSUNABA_VERBOSE} ||= $ENV{VERBOSE} // '';
 
-    @ARGV or die "Usage: Xsunaba [command args...]\n";
+    my $amnesiac = 0;
+    if ( @ARGV && $ARGV[0] eq '--amnesiac' ) {
+        $amnesiac = 1;
+        shift @ARGV;
+    }
+
+    @ARGV or die "Usage: Xsunaba [--amnesiac] [command args...]\n";
 
     exit Xsunaba::launch(
-        app  => $ARGV[0],
-        args => [ @ARGV[ 1 .. $#ARGV ] ],
+        amnesiac => $amnesiac,
+        app      => $ARGV[0],
+        args     => [ @ARGV[ 1 .. $#ARGV ] ],
     );
 }
 

@@ -49,6 +49,19 @@ is_deeply(
     'minimal helper argv',
 );
 
+@argv = Xsunaba::build_helper_argv(
+    parent_display => ':0',
+    parent_xauth   => '/home/u/.Xauthority',
+    amnesiac       => 1,
+    app_argv       => [ '/bin/true' ],
+);
+is_deeply(
+    \@argv,
+    [ '--parent-display', ':0', '--parent-xauth', '/home/u/.Xauthority',
+      '--amnesiac', '--', '/bin/true' ],
+    'amnesiac flag passed before --',
+);
+
 # --- Frontend validation and end-to-end argv -----------------------
 # CLEANUP disabled: the forked children inherit the tempdir object and
 # must not delete it on their own exit.
@@ -200,6 +213,69 @@ FAKE
     eval { Xsunaba::launch( app => '/usr/bin/xterm', display => ':50',
         width => 1000, height => 800 ) };
     like( $@, qr/exec \/usr\/bin\/doas/, 'real doas missing on Linux' );
+}
+
+# --- Amnesiac end-to-end argv and browser-geometry neutrality -------
+{
+    local %ENV = %base_env;
+    delete @ENV{qw(XSUNABA_PLEDGE XSUNABA_UNVEIL XSUNABA_DISPLAY
+        WIDTH HEIGHT VERBOSE XSUNABA_VERBOSE)};
+    $ENV{HOME}    = $dir;
+    $ENV{DISPLAY} = ':0';
+    $ENV{XAUTHORITY} = $xauth;
+
+    my $fake = "$dir/fake-doas-amnesiac";
+    my $out  = "$dir/doas-argv-amnesiac";
+    open my $s, '>', $fake or die $!;
+    my $perl = $^X;
+    print {$s} "#!$perl\n";
+    print {$s} <<'FAKE';
+#!/usr/bin/perl
+use strict;
+use warnings;
+open my $fh, '>', $ENV{FAKE_DOAS_OUT} or die $!;
+print {$fh} join("\0", @ARGV), "\0";
+close $fh;
+FAKE
+    close $s;
+    chmod 0755, $fake or die $!;
+    local $Xsunaba::DOAS_BIN = $fake;
+
+    my $pid = fork();
+    die "fork: $!" unless defined $pid;
+    if ( $pid == 0 ) {
+        $ENV{FAKE_DOAS_OUT} = $out;
+        Xsunaba::launch(
+            amnesiac => 1,
+            app      => '/usr/local/bin/firefox',
+            args     => [ '--private-window' ],
+            width    => 1100,
+            height   => 700,
+        );
+        exit 0;
+    }
+    waitpid( $pid, 0 );
+    is( $? >> 8, 0, 'amnesiac launch execs cleanly' );
+    open my $rf, '<', $out or die $!;
+    my $raw = do { local $/; <$rf> };
+    close $rf;
+    my @got = split /\0/, $raw, -1;
+    pop @got;
+    is_deeply(
+        \@got,
+        [
+            $Xsunaba::HELPER,
+            '--parent-display', ':0',
+            '--parent-xauth',   $xauth,
+            '--display',        '32',
+            '--width',          '1100',
+            '--height',         '700',
+            '--amnesiac',
+            '--',
+            '/usr/local/bin/firefox', '--private-window',
+        ],
+        'amnesiac argv exact; no browser geometry hacks appended',
+    );
 }
 
 remove_tree($dir);
