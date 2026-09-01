@@ -89,6 +89,16 @@ uninstall:
 test:
 	prove -I t/lib -v t/
 
+# Build the optional X11 popup/pointer-grab regression tool used to
+# validate input handling inside the nested server.
+.PHONY: tools
+tools: tools/popup-grab-test
+
+tools/popup-grab-test: tools/popup-grab-test.c
+	cc -Wall -Wextra -Wpedantic -Wshadow -Wconversion -O2 \
+		$$(pkg-config --cflags --libs x11) \
+		tools/popup-grab-test.c -o tools/popup-grab-test
+
 .PHONY: help
 help:
 	@printf "\nMakefile targets:\n\
@@ -99,9 +109,11 @@ help:
 	  show-doas-rule - Prints the doas.conf rule to review and install\n \
 	  uninstall      - Removes the script, helper and man page\n \
 	  test           - Runs the regression tests\n \
-	  clean          - Removes artifacts (none)\n \
+	  tools          - Builds the popup-grab input regression tool\n \
+	  clean          - Removes artifacts\n \
 	  help           - Displays this help message\n\n"
 
 .PHONY: clean
 clean:
-	@echo "${INFO} Nothing to clean"
+	rm -f tools/popup-grab-test
+	@echo "${INFO} Clean complete"

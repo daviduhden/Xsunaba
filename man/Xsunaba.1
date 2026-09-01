@@ -1,4 +1,4 @@
-.Dd $Mdocdate: August 31 2026 $
+.Dd $Mdocdate: September 1 2026 $
 .Dt XSUNABA 1
 .Os
 .Sh NAME
@@ -6,6 +6,7 @@
 .Nd run X11 applications in a nested Xephyr display under dedicated accounts
 .Sh SYNOPSIS
 .Nm
+.Op Fl -amnesiac
 .Op Ar command Op Ar argument ...
 .Sh DESCRIPTION
 The
@@ -22,9 +23,12 @@ The isolation boundary is Unix account separation combined with X11
 authentication and Unix socket permissions:
 .Bl -enum -compact -offset indent
 .It
-The application runs as the dedicated
+The application runs under a dedicated account, never as the invoking
+user: the persistent
 .Sy _xsunaba_app
-account, never as the invoking user.
+account, or, in amnesiac mode, a fresh
+.Sy _xsunaba_ Ns Ao Ar random Ac
+account created for the session.
 .It
 .Xr Xephyr 1
 runs as the dedicated
@@ -39,10 +43,9 @@ The invoking user cannot read them.
 The nested Unix socket
 .Pa /tmp/.X11-unix/X Ns Ao Ar NN Ac
 is tightened to mode 0660, owned by
-.Sy _xsunaba_xephyr ,
-group
-.Sy _xsunaba ,
-so only the two sandbox accounts can connect.
+.Sy _xsunaba_xephyr
+and a group restricted to the application account, so only the two
+sandbox accounts can connect.
 .It
 The application environment is rebuilt from scratch:
 .Ev DISPLAY
@@ -56,6 +59,15 @@ and
 .Xr pledge 2
 are applied on top as defense in depth.
 .El
+.Pp
+The Xephyr outer window is a normal host-WM-resizable window.
+.Ev WIDTH
+and
+.Ev HEIGHT
+set its initial size only; resizing it afterwards resizes the nested
+screen through Xephyr's RandR support
+.Pq ephyrResizeScreen ,
+so applications inside observe the new geometry.
 .Pp
 When invoked from the command line,
 .Nm
@@ -77,6 +89,52 @@ clients of the same parent X server.
 Stronger host-to-sandbox isolation requires a separate X
 server/session/VT, a virtual machine, or another display
 architecture.
+.Pp
+Crossing the Unix-user isolation boundary should require exploiting
+an additional trusted/privileged interface or a privilege-boundary
+vulnerability, rather than merely escaping pledge/unveil.
+Globally accessible resources (world-readable files, world-writable
+directories, services with unauthenticated sockets, shared groups,
+inherited file descriptors) are outside that boundary.
+.Sh AMNESIAC MODE
+.Fl -amnesiac
+creates a brand-new Unix user for this invocation only:
+.Bl -enum -compact -offset indent
+.It
+A fresh account
+.Sy _xsunaba_ Ns Ao Ar random Ac
+with a private primary group, no usable password,
+.Pa /sbin/nologin
+shell and a private home
+.Pq Pa /var/xsunaba/home/_xsunaba_ Ns Ao Ar random Ac
+mode 0700.
+.It
+The helper sets
+.Xr umask 2
+to 077 before the application starts, so application-created files
+default to 0600 and directories to 0700.
+The application may deliberately change permissions on objects it
+owns; the umask is a default, not an access-control policy.
+.It
+The application receives credentials only for the nested display; the
+nested socket is group-owned by the ephemeral private group.
+.It
+When the session ends (normal exit, Xephyr failure, startup failure,
+SIGINT or SIGTERM), remaining processes under the ephemeral UID are
+terminated, the session directory is removed, the verified ephemeral
+home is removed, and the account and its private group are deleted.
+Nothing persists between invocations.
+.It
+Interrupted sessions are recovered conservatively by the next
+amnesiac invocation: only session directories holding the helper's
+liveness lock and naming the account in their own account file are
+considered, only once no process remains under that UID.
+Unrelated accounts are never touched.
+.El
+.Pp
+Persistent mode (without the flag) keeps the existing
+.Sy _xsunaba_app
+account and its shared home.
 .Sh PRIVILEGED HELPER
 The helper is deliberately small and only reachable through a narrow
 .Xr doas.conf 5
@@ -119,12 +177,32 @@ and
 sequences, resets supplementary groups and checks that privileges
 cannot be regained;
 .It
-restricts the nested socket to 0660
-.Sy _xsunaba_xephyr:_xsunaba
-once Xephyr has created it and runs Xephyr with
+restricts the nested socket to 0660 owned by
+.Sy _xsunaba_xephyr
+plus the application socket group once Xephyr has created it;
+.It
+runs Xephyr with
 .Fl noreset
 so the server cannot recreate the socket with looser permissions
-after a reset;
+after a reset, with
+.Fl resizeable
+so the host WM may resize the window, and with
+.Fl no-host-grab
+so Xephyr performs no manual keyboard/mouse host grab
+.Pq see Sx INPUT HANDLING ;
+.It
+sets
+.Xr umask 2
+to 077 before creating session data;
+.It
+in amnesiac mode creates the ephemeral account with
+.Xr useradd 8
+.Pq no password, nologin shell, private group
+and deletes it with
+.Xr userdel 8
+plus
+.Xr groupdel 8
+after terminating every process under its UID;
 .It
 rebuilds the application environment and optionally applies
 .Xr unveil 2 ;
@@ -134,9 +212,33 @@ cleans up the socket and the session directory on exit;
 finally calls
 .Xr pledge 2
 with
-.Ql stdio rpath cpath fattr proc
+.Ql stdio rpath cpath fattr proc exec getpw
 for the teardown phase.
 .El
+.Sh INPUT HANDLING
+Xephyr's input path is a plain pass-through: host motion, button and
+key events become nested events.
+Its only input manipulation by default is a manual keyboard/pointer
+grab on the host display triggered by the ctrl+shift key combination
+.Pq ephyrProcessKeyRelease ,
+which changes the window title and can leave the mouse stuck inside
+the window.
+Browser shortcuts such as ctrl+shift+U (Tor Browser's circuit
+display) engage exactly this state machine right before popup menus
+are used.
+.Nm
+starts Xephyr with
+.Fl no-host-grab ,
+which removes that manual grab: input stays plain pass-through, no
+host grabs occur, and MIT-MAGIC-COOKIE-1 authentication is
+unaffected.
+The former forced exact-fit browser geometry was removed for the same
+reason.
+These changes are source-verified; final confirmation of the Tor
+Browser circuit-menu behavior requires the runtime checks on a real
+.Ox
+workstation
+.Pq see Sx CAVEATS .
 .Sh ENVIRONMENT
 The invoking process must have
 .Ev DISPLAY
@@ -159,7 +261,9 @@ and
 .Ev LC_* .
 Variables such as
 .Ev DBUS_SESSION_BUS_ADDRESS , SSH_AUTH_SOCK , SSH_AGENT_PID ,
-.Ev GPG_AGENT_INFO , WAYLAND_DISPLAY , XDG_SESSION_* , KRB5CCNAME ,
+.Ev GPG_AGENT_INFO , WAYLAND_DISPLAY , SESSION_MANAGER ,
+.Ev XDG_SESSION_* , XDG_CONFIG_HOME , XDG_DATA_HOME ,
+.Ev XDG_CACHE_HOME , KRB5CCNAME ,
 sndio variables and
 .Ev XSUNABA_*
 are never forwarded.
@@ -221,12 +325,12 @@ Default:
 .Ql :32 .
 .It Ev WIDTH
 .Xr Xephyr 1
-display width in pixels.
+initial display width in pixels; the window is resizable afterwards.
 Default:
 .Ql 1024 .
 .It Ev HEIGHT
 .Xr Xephyr 1
-display height in pixels.
+initial display height in pixels; the window is resizable afterwards.
 Default:
 .Ql 768 .
 .It Ev VERBOSE
@@ -273,9 +377,20 @@ Nested-display client cookie (mode 0600, owned by
 Per-session
 .Ev XDG_RUNTIME_DIR
 (mode 0700).
+.It Pa /var/run/xsunaba/ Ns Ar random Ns Pa /active.lock
+Amnesiac liveness lock (mode 0600, root); stale sessions are reaped
+when it is free.
+.It Pa /var/run/xsunaba/ Ns Ar random Ns Pa /account
+Amnesiac session's account name (mode 0600, root), used to verify
+identity during reaping.
+.It Pa /var/xsunaba/home/_xsunaba_ Ns Ar random Ns Pa /
+Private amnesiac
+.Ev HOME
+(mode 0700, owned by the ephemeral account); removed at session end.
 .It Pa /tmp/.X11-unix/X Ns Ao Ar NN Ac
 Nested X11 socket, tightened to mode 0660
-.Sy _xsunaba_xephyr:_xsunaba .
+.Sy _xsunaba_xephyr
+plus the application socket group.
 .It Pa /usr/X11R6/bin/Xephyr
 The nested X server executable.
 .El
@@ -295,13 +410,18 @@ $ XSUNABA_UNVEIL="/usr/local/bin/firefox:rx,/tmp:rwc,/etc:r,/dev:r,\e
   /home/_xsunaba_app/.mozilla:rwc" Xsunaba firefox
 .Ed
 .Pp
+Run Tor Browser with a throwaway account:
+.Bd -literal -offset indent
+$ Xsunaba --amnesiac tor-browser
+.Ed
+.Pp
 Run xterm with minimal access, verbose output enabled:
 .Bd -literal -offset indent
 $ VERBOSE=1 XSUNABA_UNVEIL="/usr/X11R6/bin/xterm:rx,/tmp:rwc,/etc:r" \e
   Xsunaba xterm
 .Ed
 .Pp
-Launch a sandbox on a custom display with custom geometry:
+Launch a sandbox on a custom display with custom initial geometry:
 .Bd -literal -offset indent
 $ XSUNABA_DISPLAY=":40" WIDTH=1280 HEIGHT=900 Xsunaba gimp
 .Ed
@@ -312,9 +432,10 @@ Use Xsunaba as a Perl module:
 require '/usr/local/bin/Xsunaba';
 
 Xsunaba::launch(
-    app    => '/usr/local/bin/firefox',
-    args   => ['--private-window'],
-    unveil => ['/usr/local/bin/firefox:rx', '/tmp:rwc'],
+    app      => '/usr/local/bin/firefox',
+    args     => ['--private-window'],
+    amnesiac => 1,
+    unveil   => ['/usr/local/bin/firefox:rx', '/tmp:rwc'],
 );
 .Ed
 .Pp
@@ -353,10 +474,15 @@ All such conditions fail closed and clean up the session.
 .Xr perl 1 ,
 .Xr Xephyr 1 ,
 .Xr pledge 2 ,
+.Xr umask 2 ,
 .Xr unveil 2 ,
 .Xr doas.conf 5 ,
 .Xr X 7 ,
-.Xr sndiod 8
+.Xr groupadd 8 ,
+.Xr groupdel 8 ,
+.Xr sndiod 8 ,
+.Xr useradd 8 ,
+.Xr userdel 8
 .Sh HISTORY
 .Nm
 is based on a script by
@@ -382,6 +508,11 @@ and
 .Sy _xsunaba_app
 accounts, a narrow root helper, split authority files, socket
 permission tightening, and rebuilt environments.
+Later additions: a host-WM-resizable Xephyr window
+.Pq Fl resizeable ,
+amnesiac per-session accounts, and pass-through input handling
+.Pq Fl no-host-grab
+to address browser popup-menu selection problems.
 .Sh CAVEATS
 .Bl -bullet
 .It
@@ -389,11 +520,13 @@ Xephyr is a client of the parent X server and is not a complete
 security boundary; see
 .Sx DESCRIPTION .
 .It
-Separate
-.Nm
-invocations share the sandbox accounts and are not mutually
-isolated: an application in one session can read another session's
-application-side authority file and shared home directory.
+Persistent-mode invocations share the sandbox accounts and are not
+mutually isolated: an application in one session can read another
+session's application-side authority file and shared home directory.
+Amnesiac mode provides a fresh UID per session.
+.It
+The umask 077 applied by the helper is a default only; applications
+can deliberately change permissions on files they own.
 .It
 The parent X socket must permit connections from the
 .Sy _xsunaba_xephyr
@@ -404,8 +537,36 @@ The application cannot play audio through
 unless the administrator shares the sndio cookie with the sandbox
 account.
 .It
-There is no window manager inside the Xephyr display; applications
-run full-screen at the configured resolution.
+There is no window manager inside the Xephyr display; the
+application starts at the initial resolution and follows Xephyr
+window resizes through RandR.
+.It
+The input fixes
+.Pq Fl no-host-grab ,
+removal of forced browser geometry
+are source-verified; whether they fully resolve the Tor Browser
+circuit-menu selection problem requires the runtime checks below:
+.Pp
+.Bl -enum -compact
+.It
+start
+.Nm
+with xterm, Firefox and Tor Browser;
+.It
+open menus, context menus, dropdowns, the Tor circuit display
+.Pq ctrl+shift+U
+and click every item;
+.It
+resize the Xephyr window and repeat;
+.It
+compare against plain
+.Xr Xephyr 1
+with and without
+.Fl no-host-grab
+and against
+.Pa tools/popup-grab-test
+.Pq make tools .
+.El
 .It
 .Nm
 is a mitigation, not a guarantee; combine it with other

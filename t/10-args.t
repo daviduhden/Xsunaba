@@ -47,6 +47,7 @@ $o = ok_args(
     '--width',          '1280',
     '--height',         '900',
     '--unveil',         '/tmp:rwc,/etc:r',
+    '--amnesiac',
     '--verbose',
     '--',
     '/usr/local/bin/firefox',
@@ -56,9 +57,13 @@ is( $o->{display}, 50, 'display parsed' );
 is( $o->{width},   1280, 'width parsed' );
 is( $o->{height},  900, 'height parsed' );
 is_deeply( $o->{unveil}, [ '/tmp:rwc', '/etc:r' ], 'unveil parsed' );
+ok( $o->{amnesiac}, 'amnesiac parsed' );
 ok( $o->{verbose}, 'verbose parsed' );
 is( $o->{app}, '/usr/local/bin/firefox', 'app parsed' );
 is_deeply( $o->{app_args}, ['--private-window'], 'app args parsed' );
+
+$o = ok_args( 'amnesiac off by default', @$base, '--', '/bin/true' );
+ok( !$o->{amnesiac}, 'amnesiac defaults to off' );
 
 # App arguments that look like helper options must be accepted
 $o = ok_args(
