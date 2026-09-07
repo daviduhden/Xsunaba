@@ -13,9 +13,9 @@ MAN = man
 BINDIR = ${PREFIX}/${BIN}
 LIBEXECDIR = ${PREFIX}/${LIBEXEC}
 MANDIR = ${PREFIX}/${MAN}/man${SECTION}
-PROG_PATH = ${.PARSEDIR}/${BIN}/${PROG_SRC}
-HELPER_PATH = ${.PARSEDIR}/${LIBEXEC}/${HELPER}
-MAN_PATH = ${.PARSEDIR}/${MAN}/${PROG}.${SECTION}
+PROG_PATH = ${BIN}/${PROG_SRC}
+HELPER_PATH = ${LIBEXEC}/${HELPER}
+MAN_PATH = ${MAN}/${PROG}.${SECTION}
 INFO = ==>
 
 # Dedicated accounts. The Xephyr account owns the nested X server;
