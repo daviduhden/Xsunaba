@@ -24,12 +24,12 @@ package Xsunaba::Helper;
 
 use strict;
 use warnings;
-use Exporter   qw(import);
-use Fcntl      qw(O_CREAT O_EXCL O_RDONLY O_RDWR O_WRONLY :flock
-                  S_IFMT S_IFSOCK S_IFDIR);
+use Exporter qw(import);
+use Fcntl    qw(O_CREAT O_EXCL O_RDONLY O_RDWR O_WRONLY :flock
+  S_IFMT S_IFSOCK S_IFDIR);
 use File::Path qw(remove_tree);
 use POSIX      qw(_exit WNOHANG getegid geteuid getgid getgroups getgrnam
-                  getpwnam getuid setgid setuid);
+  getpwnam getuid setgid setuid);
 use Sys::Hostname qw(hostname);
 
 our @EXPORT_OK = qw(
@@ -44,44 +44,49 @@ our @EXPORT_OK = qw(
 );
 our %EXPORT_TAGS = ( all => \@EXPORT_OK );
 
-use constant FAMILY_LOCAL => 256;    # FamilyLocal
-use constant FAMILY_WILD  => 65535;  # FamilyWild
+use constant FAMILY_LOCAL => 256;      # FamilyLocal
+use constant FAMILY_WILD  => 65535;    # FamilyWild
 
 # Fixed paths and account names. The helper refuses to proceed if the
 # accounts do not exist with the expected relationship.
-our $RUN_DIR       = '/var/run/xsunaba';
-our $SOCKET_DIR    = '/tmp/.X11-unix';
-our $XEPHYR_BIN    = '/usr/X11R6/bin/Xephyr';
-our $XEPHYR_USER   = '_xsunaba_xephyr';
-our $APP_USER      = '_xsunaba_app';
-our $APP_GROUP     = '_xsunaba';
-our $APP_PATH      = '/usr/local/bin:/usr/X11R6/bin:/usr/bin:/bin';
-our $MINIMAL_PATH  = '/usr/X11R6/bin:/usr/bin:/bin';
-our $MAX_DISPLAY   = 999;
-our $SOCKET_MODE   = 0660;
-our $MAX_AUTH_LEN  = 4096;
-our $MAX_XAUTH     = 1048576;  # 1 MiB
-our $COOKIE_LEN    = 16;
-our $VERBOSE       = 0;
+our $RUN_DIR      = '/var/run/xsunaba';
+our $SOCKET_DIR   = '/tmp/.X11-unix';
+our $XEPHYR_BIN   = '/usr/X11R6/bin/Xephyr';
+our $XEPHYR_USER  = '_xsunaba_xephyr';
+our $APP_USER     = '_xsunaba_app';
+our $APP_GROUP    = '_xsunaba';
+our $APP_PATH     = '/usr/local/bin:/usr/X11R6/bin:/usr/bin:/bin';
+our $MINIMAL_PATH = '/usr/X11R6/bin:/usr/bin:/bin';
+our $MAX_DISPLAY  = 999;
+our $SOCKET_MODE  = 0660;
+our $MAX_AUTH_LEN = 4096;
+our $MAX_XAUTH    = 1048576;                                         # 1 MiB
+our $COOKIE_LEN   = 16;
+our $VERBOSE      = 0;
 
 # Amnesiac mode: a fresh Unix user per session.
 our $EPHEMERAL_PREFIX    = '_xsunaba_';
-our $EPHEMERAL_TOKEN_LEN = 16;      # hex chars in the account name
+our $EPHEMERAL_TOKEN_LEN = 16;                   # hex chars in the account name
 our $EPHEMERAL_HOME_BASE = '/var/xsunaba/home';
 our $EPHEMERAL_SHELL     = '/sbin/nologin';
-our $USERADD_BIN = '/usr/sbin/useradd';
-our $USERDEL_BIN = '/usr/sbin/userdel';
-our $GROUPDEL_BIN = '/usr/sbin/groupdel';
-our $PKILL_BIN   = '/usr/bin/pkill';
+our $USERADD_BIN         = '/usr/sbin/useradd';
+our $USERDEL_BIN         = '/usr/sbin/userdel';
+our $GROUPDEL_BIN        = '/usr/sbin/groupdel';
+our $PKILL_BIN           = '/usr/bin/pkill';
 
 our @PASSTHROUGH_ENV = qw(TERM TZ LANG LC_ALL LC_CTYPE LC_MESSAGES);
 
-sub _inf { print "[INFO] @_\n" if $VERBOSE }
-sub _wrn { print STDERR "[WARN] @_\n" }
+sub logi { print "[INFO] @_\n" if $VERBOSE }
+sub logw { print STDERR "[WARN] @_\n" }
 sub _err { print STDERR "[ERROR] @_\n" }
 
+sub die_tool {
+    print STDERR "[ERROR] $_[0]\n";
+    exit 1;
+}
+
 sub _untaint {
-    my ($value, $what) = @_;
+    my ( $value, $what ) = @_;
     defined $value or die "missing $what";
     die "$what contains a NUL byte" if $value =~ /\0/;
     my ($clean) = $value =~ /\A(.*)\z/s;
@@ -104,7 +109,7 @@ sub parse_args {
     };
 
     my $need = sub {
-        my ($name, $value) = @_;
+        my ( $name, $value ) = @_;
         $usage->() unless defined $value && length $value;
         return $value;
     };
@@ -113,7 +118,7 @@ sub parse_args {
     while ( $i < @argv ) {
         my $a = $argv[$i];
         last if $a eq '--';
-        if    ( $a eq '--parent-display' ) {
+        if ( $a eq '--parent-display' ) {
             $o{parent_display} = $need->( $a, $argv[ ++$i ] );
         }
         elsif ( $a eq '--parent-xauth' ) {
@@ -132,8 +137,8 @@ sub parse_args {
             $o{unveil} = $need->( $a, $argv[ ++$i ] );
         }
         elsif ( $a eq '--amnesiac' ) { $o{amnesiac} = 1 }
-        elsif ( $a eq '--verbose' ) { $o{verbose} = 1 }
-        else { $usage->() }
+        elsif ( $a eq '--verbose' )  { $o{verbose} = 1 }
+        else                         { $usage->() }
         $i++;
     }
     $usage->() unless $i < @argv && $argv[$i] eq '--';
@@ -235,15 +240,10 @@ sub find_free_display {
 sub build_xephyr_argv {
     my (%s) = @_;
     return (
-        $XEPHYR_BIN,
-        '-auth', $s{server_auth},
-        '-screen', "$s{width}x$s{height}",
-        '-br',
-        '-nolisten', 'tcp',
-        '-noreset',
-        '-resizeable',
-        '-no-host-grab',
-        $s{display},
+        $XEPHYR_BIN,   '-auth',                $s{server_auth},
+        '-screen',     "$s{width}x$s{height}", '-br',
+        '-nolisten',   'tcp',                  '-noreset',
+        '-resizeable', '-no-host-grab',        $s{display},
     );
 }
 
@@ -265,13 +265,8 @@ sub ephemeral_home_for {
 
 sub build_useradd_argv {
     my ( $user, $home ) = @_;
-    return (
-        $USERADD_BIN,
-        '-d', $home,
-        '-g', '=uid',
-        '-s', $EPHEMERAL_SHELL,
-        $user,
-    );
+    return ( $USERADD_BIN, '-d', $home, '-g', '=uid', '-s', $EPHEMERAL_SHELL,
+        $user, );
 }
 
 sub build_userdel_argv {
@@ -287,7 +282,7 @@ sub build_groupdel_argv {
 sub build_pkill_argv {
     my ( $signal, $uid ) = @_;
     die "invalid signal\n" unless $signal =~ /\A(?:TERM|KILL|0)\z/;
-    die "invalid uid\n" unless $uid =~ /\A[1-9][0-9]*\z/;
+    die "invalid uid\n"    unless $uid    =~ /\A[1-9][0-9]*\z/;
     return ( $PKILL_BIN, "-$signal", '-U', $uid, '.' );
 }
 
@@ -320,14 +315,14 @@ sub xauth_record_bytes {
       || length( $r->{name} ) > $MAX_AUTH_LEN
       || length( $r->{data} ) > $MAX_AUTH_LEN;
     return pack(
-        'n n a' . length( $r->{address} )
-          . ' n a' . length( $r->{number} )
-          . ' n a' . length( $r->{name} )
-          . ' n a' . length( $r->{data} ),
-        $r->{family}, length( $r->{address} ), $r->{address},
-        length( $r->{number} ),  $r->{number},
-        length( $r->{name} ),    $r->{name},
-        length( $r->{data} ),    $r->{data},
+        'n n a'
+          . length( $r->{address} ) . ' n a'
+          . length( $r->{number} ) . ' n a'
+          . length( $r->{name} ) . ' n a'
+          . length( $r->{data} ),
+        $r->{family},           length( $r->{address} ), $r->{address},
+        length( $r->{number} ), $r->{number},            length( $r->{name} ),
+        $r->{name},             length( $r->{data} ),    $r->{data},
     );
 }
 
@@ -358,7 +353,7 @@ sub parse_xauth_bytes {
               if $size - $pos < 2;
             my ($len) = unpack( 'n', substr( $data, $pos, 2 ) );
             $pos += 2;
-            die "Xauthority $field too long\n" if $len > $MAX_AUTH_LEN;
+            die "Xauthority $field too long\n"  if $len > $MAX_AUTH_LEN;
             die "truncated Xauthority $field\n" if $size - $pos < $len;
             $r{$field} = substr( $data, $pos, $len );
             $pos += $len;
@@ -381,13 +376,13 @@ sub read_xauth_file {
         $data .= $buf;
     }
     defined $buf or die "read $path: $!";
-    close $fh or die "close $path: $!";
+    close $fh    or die "close $path: $!";
     return parse_xauth_bytes($data);
 }
 
 sub parent_display_number {
     my ($display) = @_;
-    my ($n) = $display =~ /\A:([0-9]+)(?:\.[0-9]+)?\z/
+    my ($n)       = $display =~ /\A:([0-9]+)(?:\.[0-9]+)?\z/
       or die "invalid display '$display'\n";
     return $n;
 }
@@ -395,10 +390,9 @@ sub parent_display_number {
 sub extract_parent_auth {
     my ( $records, $display ) = @_;
     my $number = parent_display_number($display);
-    my @matched = grep {
-        $_->{number} eq $number
-          && $_->{name} eq 'MIT-MAGIC-COOKIE-1'
-    } @{$records};
+    my @matched =
+      grep { $_->{number} eq $number && $_->{name} eq 'MIT-MAGIC-COOKIE-1' }
+      @{$records};
     for my $r (@matched) {
         die "invalid MIT-MAGIC-COOKIE-1 length\n"
           unless length( $r->{data} ) == $COOKIE_LEN;
@@ -522,8 +516,8 @@ sub make_session_dir {
 
 sub exit_status {
     my ($status) = @_;
-    return 1                           if $status == -1;
-    return 128 + ( $status & 127 )     if $status & 127;
+    return 1                       if $status == -1;
+    return 128 + ( $status & 127 ) if $status & 127;
     return $status >> 8;
 }
 
@@ -546,9 +540,9 @@ sub drop_privs {
     setgid($gid) == 0 or return 0;
     setuid($uid) == 0 or return 0;
 
-    getuid()  == $uid or return 0;
+    getuid() == $uid  or return 0;
     geteuid() == $uid or return 0;
-    getgid()  == $gid or return 0;
+    getgid() == $gid  or return 0;
     getegid() == $gid or return 0;
     my @groups = getgroups();
     @groups == 1 && $groups[0] == $gid or return 0;
@@ -566,9 +560,9 @@ sub run {
     my (@argv) = @_;
 
     $^O eq 'openbsd'
-      or die "xsunaba-helper runs on OpenBSD only\n";
+      or die_tool "xsunaba-helper runs on OpenBSD only";
     getuid() == 0 && geteuid() == 0
-      or die "xsunaba-helper must be invoked through doas as root\n";
+      or die_tool "xsunaba-helper must be invoked through doas as root";
 
     my $opts = parse_args(@argv);
 
@@ -586,7 +580,7 @@ sub run {
 
     # Scrub the environment. doas already built a fresh one; keep only
     # what the children genuinely may receive.
-    my $passthru = _passthrough( \%ENV );
+    my $passthru  = _passthrough( \%ENV );
     my $doas_user = $ENV{DOAS_USER};
     %ENV = ();
     $ENV{PATH} = $MINIMAL_PATH;
@@ -596,19 +590,20 @@ sub run {
     # helper to extract records from authority files of other users.
     if ( defined $doas_user && length $doas_user ) {
         my ($user) = $doas_user =~ /\A([a-z_][a-z0-9_-]{0,30})\z/
-          or die "invalid DOAS_USER\n";
-        my @pw = getpwnam($user) or die "DOAS_USER '$user' unknown\n";
+          or die_tool "invalid DOAS_USER";
+        my @pw = getpwnam($user)
+          or die_tool "DOAS_USER '$user' unknown";
         my @st = stat $opts->{parent_xauth}
-          or die "stat $opts->{parent_xauth}: $!\n";
+          or die_tool "stat $opts->{parent_xauth}: $!";
         -f _
-          or die "$opts->{parent_xauth} is not a regular file\n";
+          or die_tool "$opts->{parent_xauth} is not a regular file";
         $st[4] == $pw[2]
-          or die "$opts->{parent_xauth} is not owned by '$user'\n";
+          or die_tool "$opts->{parent_xauth} is not owned by '$user'";
     }
 
     my $xephyr = getpwnam($XEPHYR_USER)
-      or die "user $XEPHYR_USER missing; run 'doas make install-users'\n";
-    die "$XEPHYR_USER must not be root\n" if $xephyr->uid == 0;
+      or die_tool "user $XEPHYR_USER missing; run 'doas make install-users'";
+    die_tool "$XEPHYR_USER must not be root" if $xephyr->uid == 0;
 
     # Application identity: persistent dedicated account or, in
     # amnesiac mode, a fresh account created further below.
@@ -625,13 +620,13 @@ sub run {
     }
     else {
         my $app = getpwnam($APP_USER)
-          or die "user $APP_USER missing; run 'doas make install-users'\n";
+          or die_tool "user $APP_USER missing; run 'doas make install-users'";
         my $appgrp = getgrnam($APP_GROUP)
-          or die "group $APP_GROUP missing; run 'doas make install-users'\n";
-        die "$APP_USER must not be root\n" if $app->uid == 0;
-        die "$XEPHYR_USER and $APP_USER share a UID\n"
+          or die_tool "group $APP_GROUP missing; run 'doas make install-users'";
+        die_tool "$APP_USER must not be root" if $app->uid == 0;
+        die_tool "$XEPHYR_USER and $APP_USER share a UID"
           if $xephyr->uid == $app->uid;
-        die "primary group of $APP_USER must be $APP_GROUP\n"
+        die_tool "primary group of $APP_USER must be $APP_GROUP"
           unless $app->gid == $appgrp->gid;
         $app_uid      = $app->uid;
         $app_gid      = $app->gid;
@@ -647,18 +642,19 @@ sub run {
     # Serialize display allocation and hold the lock until the socket
     # is created, so two helpers can never claim the same display.
     sysopen( my $lock, "$RUN_DIR/display.lock", O_CREAT | O_RDWR, 0600 )
-      or die "open $RUN_DIR/display.lock: $!";
-    flock( $lock, LOCK_EX ) or die "flock: $!";
+      or die_tool "open $RUN_DIR/display.lock: $!";
+    flock( $lock, LOCK_EX ) or die_tool "flock: $!";
 
-    my $display = find_free_display(
-        $opts->{display},
+    my $display =
+      find_free_display( $opts->{display},
         sub { path_exists( socket_path( $_[0] ) ) },
-    );
-    die "no free X display from :$opts->{display} through :$MAX_DISPLAY\n"
+      );
+    die_tool "no free X display from :$opts->{display} "
+      . "through :$MAX_DISPLAY"
       unless defined $display;
     my $socket = socket_path($display);
 
-    my $session = make_session_dir();
+    my $session    = make_session_dir();
     my $xephyr_dir = "$session/xephyr";
     my $app_dir    = "$session/app";
     my $run_dir    = "$app_dir/run";
@@ -683,7 +679,7 @@ sub run {
             waitpid( $app_pid, 0 );
         }
         if ( lstat $socket && -S _ && ( stat _ )[4] == $xephyr->uid ) {
-            unlink $socket or _wrn "cannot remove $socket: $!";
+            unlink $socket or logw "cannot remove $socket: $!";
         }
         if ( $am->{amnesiac} ) {
             _amnesiac_teardown( $am, $session );
@@ -699,6 +695,7 @@ sub run {
         kill 'TERM', $xephyr_pid if $xephyr_pid;
         kill 'TERM', $app_pid    if $app_pid;
     };
+
     # Deterministic SIGUSR1 disposition: Xephyr notifies the parent
     # only when it inherited SIG_IGN; we want the default so that no
     # signal race exists.
@@ -713,12 +710,12 @@ sub run {
         flock( $alock, LOCK_EX ) or $fatal->("flock: $!");
         $am->{lock_fh} = $alock;
         _amnesiac_create( $am, $session, $xephyr, $fatal );
-        $app_uid   = $am->{uid};
-        $app_gid   = $am->{gid};
-        $app_home  = $am->{home};
-        $app_shell = $EPHEMERAL_SHELL;
+        $app_uid      = $am->{uid};
+        $app_gid      = $am->{gid};
+        $app_home     = $am->{home};
+        $app_shell    = $EPHEMERAL_SHELL;
         $app_username = $am->{user};
-        $socket_gid = $am->{gid};
+        $socket_gid   = $am->{gid};
     }
 
     mkdir $xephyr_dir, 0700 or $fatal->("mkdir $xephyr_dir: $!");
@@ -744,8 +741,7 @@ sub run {
           eval { extract_parent_auth( $records, $opts->{parent_display} ) };
         $fatal->("$@") if $@;
         @$matched
-          or $fatal->(
-            "no MIT-MAGIC-COOKIE-1 entry for "
+          or $fatal->( "no MIT-MAGIC-COOKIE-1 entry for "
               . "$opts->{parent_display} in $opts->{parent_xauth}" );
         write_xauth_file( $parent_auth, $matched );
         chown( $xephyr->uid, $xephyr->gid, $parent_auth ) == 1
@@ -768,9 +764,9 @@ sub run {
     chown( $app_uid, $app_gid, $client_auth ) == 1
       or $fatal->("chown $client_auth: $!");
 
-    _inf "using display :$display";
-    _inf "session directory $session";
-    _inf "amnesiac account $am->{user}" if $opts->{amnesiac};
+    logi "using display :$display";
+    logi "session directory $session";
+    logi "amnesiac account $am->{user}" if $opts->{amnesiac};
 
     # --- Xephyr, as the dedicated Xephyr UID ---
     $xephyr_pid = fork();
@@ -788,7 +784,7 @@ sub run {
             )
         };
         drop_privs( $xephyr->uid, $xephyr->gid )
-          or _err( "failed to drop privileges for Xephyr" ), _exit(1);
+          or _err("failed to drop privileges for Xephyr"), _exit(1);
         {
             exec build_xephyr_argv(
                 display     => ":$display",
@@ -800,15 +796,13 @@ sub run {
         _err "exec $XEPHYR_BIN: $!";
         _exit(1);
     }
-    _inf "Xephyr started (PID $xephyr_pid)";
+    logi "Xephyr started (PID $xephyr_pid)";
 
     # --- Wait for the socket, then restrict it ---
-    _wait_for_socket(
-        $socket, $xephyr_pid, $xephyr->uid, $socket_gid, $fatal,
+    _wait_for_socket( $socket, $xephyr_pid, $xephyr->uid, $socket_gid, $fatal,
     );
     close $lock;
-    _inf "socket $socket restricted to "
-      . sprintf( '%o', $SOCKET_MODE );
+    logi "socket $socket restricted to " . sprintf( '%o', $SOCKET_MODE );
 
     # --- Application, as the dedicated application UID ---
     $app_pid = fork();
@@ -829,21 +823,21 @@ sub run {
             )
         };
         drop_privs( $app_uid, $app_gid )
-          or _err( "failed to drop privileges for the application" ),
-             _exit(1);
+          or _err("failed to drop privileges for the application"),
+          _exit(1);
         if ( @{ $opts->{unveil} } ) {
             my @entries = @{
                 build_unveil_entries(
-                    socket_path => $socket,
-                    client_auth => $client_auth,
-                    runtime_dir => $run_dir,
+                    socket_path  => $socket,
+                    client_auth  => $client_auth,
+                    runtime_dir  => $run_dir,
                     user_entries => $opts->{unveil},
                 )
             };
             for my $entry (@entries) {
                 my ( $path, $perm ) = split /:/, $entry, 2;
                 OpenBSD::Unveil::unveil( $path, $perm )
-                  or _err( "unveil($path): $!" ), _exit(1);
+                  or _err("unveil($path): $!"), _exit(1);
             }
             OpenBSD::Unveil::unveil()
               or _err("unveil lock: $!"), _exit(1);
@@ -852,7 +846,7 @@ sub run {
         _err "exec $opts->{app}: $!";
         _exit(1);
     }
-    _inf "launched '$opts->{app}' (PID $app_pid)";
+    logi "launched '$opts->{app}' (PID $app_pid)";
 
     # The helper no longer needs to fork, execute or write files other
     # than during teardown. exec/getpw cover the account-management
@@ -860,10 +854,7 @@ sub run {
     # used by amnesiac cleanup. Fail closed: a failed pledge tears the
     # session down.
     unless (
-        OpenBSD::Pledge::pledge(
-            'stdio rpath cpath fattr proc exec getpw'
-        )
-      )
+        OpenBSD::Pledge::pledge('stdio rpath cpath fattr proc exec getpw') )
     {
         $fatal->("pledge failed: $!");
     }
@@ -885,7 +876,7 @@ sub run {
         last if $pid < 0;
     }
 
-    if ($aborted && $app_pid) {
+    if ( $aborted && $app_pid ) {
         kill 'TERM', $app_pid;
         _stop_child( $app_pid, 'the application' );
     }
@@ -898,7 +889,7 @@ sub run {
     else {
         remove_tree( $session, { safe => 1 } );
     }
-    _inf "cleanup complete";
+    logi "cleanup complete";
     return exit_status( defined $app_status ? $app_status : 1 );
 }
 
@@ -909,9 +900,9 @@ sub _ensure_run_dir {
     }
     die "mkdir $RUN_DIR: $!" unless $!{EEXIST};
     my @st = lstat $RUN_DIR or die "lstat $RUN_DIR: $!";
-    -d _ or die "$RUN_DIR exists and is not a directory\n";
-    $st[4] == 0 or die "$RUN_DIR is not owned by root\n";
-    ( $st[2] & 022 ) == 0 or die "$RUN_DIR is group or world writable\n";
+    -d _                    or die "$RUN_DIR exists and is not a directory\n";
+    $st[4] == 0             or die "$RUN_DIR is not owned by root\n";
+    ( $st[2] & 022 ) == 0   or die "$RUN_DIR is group or world writable\n";
     chmod 0711, $RUN_DIR or die "chmod $RUN_DIR: $!";
 }
 
@@ -932,7 +923,7 @@ sub _run_cmd {
     my (@argv) = @_;
     my $pid = fork();
     unless ( defined $pid ) {
-        _wrn "fork: $!";
+        logw "fork: $!";
         return -1;
     }
     if ( $pid == 0 ) {
@@ -952,9 +943,9 @@ sub _ensure_ephemeral_bases {
             next;
         }
         die "mkdir $dir: $!" unless $!{EEXIST};
-        my @st = lstat $dir or die "lstat $dir: $!";
-        -d _ or die "$dir exists and is not a directory\n";
-        $st[4] == 0 or die "$dir is not owned by root\n";
+        my @st = lstat $dir   or die "lstat $dir: $!";
+        -d _                  or die "$dir exists and is not a directory\n";
+        $st[4] == 0           or die "$dir is not owned by root\n";
         ( $st[2] & 022 ) == 0 or die "$dir is group or world writable\n";
         chmod 0711, $dir or die "chmod $dir: $!";
     }
@@ -1017,7 +1008,7 @@ sub _amnesiac_create {
     sysopen( my $af, "$session/account", O_CREAT | O_EXCL | O_WRONLY, 0600 )
       or $fatal->("open $session/account: $!");
     print {$af} "$user\n" or $fatal->("write $session/account: $!");
-    close $af or $fatal->("close $session/account: $!");
+    close $af             or $fatal->("close $session/account: $!");
 }
 
 #
@@ -1040,7 +1031,7 @@ sub _amnesiac_teardown {
         _run_cmd( build_pkill_argv( 'KILL', $am->{uid} ) );
         my $alive = _run_cmd( build_pkill_argv( '0', $am->{uid} ) );
         if ( $alive == 0 ) {
-            _wrn "processes still run as $am->{user}; "
+            logw "processes still run as $am->{user}; "
               . "account not removed to avoid UID reuse";
             $procs_gone = 0;
         }
@@ -1054,24 +1045,24 @@ sub _amnesiac_teardown {
         remove_tree( $am->{home}, { safe => 1 } );
     }
     else {
-        _wrn "refusing to remove home of $am->{user}";
+        logw "refusing to remove home of $am->{user}";
     }
 
     return unless $procs_gone;
 
     if ( $am->{user_created} ) {
         _run_cmd( build_userdel_argv( $am->{user} ) ) == 0
-          or _wrn "userdel $am->{user} failed; stale account left";
+          or logw "userdel $am->{user} failed; stale account left";
     }
 
     if ( $am->{gid} && $am->{user} ) {
         my $grp = getgrnam( $am->{user} );
-        if ( $grp
+        if (   $grp
             && $grp->gid == $am->{gid}
             && !@{ $grp->members // [] } )
         {
             _run_cmd( build_groupdel_argv( $am->{user} ) ) == 0
-              or _wrn "groupdel $am->{user} failed";
+              or logw "groupdel $am->{user} failed";
         }
     }
 }
@@ -1096,10 +1087,10 @@ sub reap_stale_sessions {
     for my $token (@tokens) {
         my $dir = "$RUN_DIR/$token";
         lstat $dir or next;
-        -d _ or next;
+        -d _       or next;
         next unless -e "$dir/active.lock";
         sysopen( my $lfh, "$dir/active.lock", O_RDWR ) or next;
-        flock( $lfh, LOCK_EX | LOCK_NB ) or next;    # live session
+        flock( $lfh, LOCK_EX | LOCK_NB )               or next;   # live session
 
         my $user;
         if ( open my $af, '<', "$dir/account" ) {
@@ -1108,7 +1099,7 @@ sub reap_stale_sessions {
             close $af;
             chomp $user if defined $user;
         }
-        if ( defined $user
+        if (   defined $user
             && $user =~ /\A\Q$EPHEMERAL_PREFIX\E[0-9a-f]{16}\z/
             && ( my @pw = getpwnam($user) ) )
         {
@@ -1126,7 +1117,7 @@ sub reap_stale_sessions {
                 }
                 _run_cmd( build_userdel_argv($user) );
                 my $grp = getgrnam($user);
-                if ( $grp
+                if (   $grp
                     && $grp->gid == $gid
                     && !@{ $grp->members // [] } )
                 {
@@ -1134,11 +1125,11 @@ sub reap_stale_sessions {
                 }
             }
             else {
-                _wrn "processes still run as $user; account not removed";
+                logw "processes still run as $user; account not removed";
             }
         }
         remove_tree( $dir, { safe => 1 } );
-        _wrn "reaped stale amnesiac session"
+        logw "reaped stale amnesiac session"
           . ( defined $user ? " $user" : '' );
         close $lfh;
     }
@@ -1201,7 +1192,7 @@ sub _stop_child {
         kill 'KILL', $pid;
         waitpid( $pid, 0 );
     }
-    _inf "stopped $what (PID $pid)";
+    logi "stopped $what (PID $pid)";
 }
 
 sub _stop_xephyr {
@@ -1217,9 +1208,9 @@ sub _stop_xephyr {
         kill 'KILL', $pid;
         waitpid( $pid, 0 );
     }
-    _inf "stopped Xephyr (PID $pid)";
+    logi "stopped Xephyr (PID $pid)";
     if ( lstat $socket && -S _ && ( stat _ )[4] == $uid ) {
-        unlink $socket or _wrn "cannot remove $socket: $!";
+        unlink $socket or logw "cannot remove $socket: $!";
     }
 }
 

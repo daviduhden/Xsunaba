@@ -22,17 +22,22 @@ our $MAX_DISPLAY = 999;
 
 my $UNVEIL_LOCKED = 0;
 
-sub _dbg {
-    warn "[Xsunaba] @_\n"
+sub logi {
+    print "[INFO] @_\n"
       if $ENV{VERBOSE} || $ENV{XSUNABA_VERBOSE};
 }
 
-sub _wrn { print STDERR "[WARN] @_\n" }
+sub logw { print STDERR "[WARN] @_\n" }
+
+sub die_tool {
+    print STDERR "[ERROR] $_[0]\n";
+    exit 1;
+}
 
 sub pledge {
     my ($promises) = @_;
     $promises //= $PLEDGE_PROMISES;
-    unless ( $^O eq 'openbsd' ) { _dbg "pledge: not on OpenBSD"; return 1 }
+    unless ( $^O eq 'openbsd' ) { logi "pledge: not on OpenBSD"; return 1 }
     require OpenBSD::Pledge;
     my @promises = grep { length } split /\s+/, $promises;
     return 1 unless @promises;
@@ -42,9 +47,9 @@ sub pledge {
 sub unveil {
     my ( $path, $perm ) = @_;
     $perm //= 'r';
-    unless ( $^O eq 'openbsd' ) { _dbg "unveil: not on OpenBSD"; return 1 }
+    unless ( $^O eq 'openbsd' ) { logi "unveil: not on OpenBSD"; return 1 }
     if     ($UNVEIL_LOCKED) {
-        _wrn "unveil($path): already locked";
+        logw "unveil($path): already locked";
         return;
     }
 
@@ -58,7 +63,7 @@ sub unveil {
 
 sub unveil_lock {
     unless ( $^O eq 'openbsd' ) {
-        _dbg "unveil_lock: not on OpenBSD";
+        logi "unveil_lock: not on OpenBSD";
         return 1;
     }
     return 1 if $UNVEIL_LOCKED;
@@ -237,7 +242,8 @@ unless (caller) {
         shift @ARGV;
     }
 
-    @ARGV or die "Usage: Xsunaba [--amnesiac] [command args...]\n";
+    @ARGV
+      or Xsunaba::die_tool "Usage: Xsunaba [--amnesiac] [command args...]";
 
     exit Xsunaba::launch(
         amnesiac => $amnesiac,
