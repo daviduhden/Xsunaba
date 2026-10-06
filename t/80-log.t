@@ -15,7 +15,7 @@ open my $fh, '<', $helper or die $!;
 my $src = do { local $/; <$fh> };
 close $fh;
 
-my @out        = grep { /\b(_inf|_wrn|_err|_dbg)\b/ } split /\n/, $src;
+my @out        = grep { /\b(logi|logw|_err|die_tool)\b/ } split /\n/, $src;
 my $violations = 0;
 for my $line (@out) {
     next if $line =~ /^\s*sub\b/;
@@ -44,8 +44,8 @@ my $out;
 {
     open my $cap, '>', \$out or die $!;
     my $old = select($cap);
-    Xsunaba::Helper::_inf('using display :32');
-    Xsunaba::Helper::_inf('session directory /var/run/xsunaba/deadbeef');
+    Xsunaba::Helper::logi('using display :32');
+    Xsunaba::Helper::logi('session directory /var/run/xsunaba/deadbeef');
     select($old);
     close $cap;
 }
