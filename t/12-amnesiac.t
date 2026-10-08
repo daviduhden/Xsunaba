@@ -3,12 +3,26 @@
 use strict;
 use warnings;
 use Test::More;
-use Test::More;
 use FindBin;
 use lib "$FindBin::Bin/lib";
-use TestHelper qw(dies_ok lives_ok);
+use TestHelper qw(dies_ok);
 
 require "$FindBin::Bin/../libexec/xsunaba-helper";
+
+# The helper relies on the object interface of getpwnam/getgrnam
+# (->uid, ->gid, ->dir, ->shell, ->members). Those methods only exist
+# when User::pwent/User::grent have overridden the builtins; guard
+# against a regression that would abort every session at startup.
+my $root_pw = Xsunaba::Helper::getpwuid(0);
+ok( ref($root_pw) && $root_pw->uid == 0,
+    'getpwuid returns a User::pwent object (->uid works)' );
+ok( defined $root_pw->dir && defined $root_pw->shell,
+    'passwd object exposes ->dir and ->shell' );
+my $root_gr = Xsunaba::Helper::getgrgid(0);
+ok( ref($root_gr) && $root_gr->gid == 0,
+    'getgrgid returns a User::grent object (->gid works)' );
+ok( ref( $root_gr->members ) eq 'ARRAY',
+    'group object exposes ->members as an array reference' );
 
 # --- Account name generation ---------------------------------------
 my $name = Xsunaba::Helper::gen_account_name('a1b2c3d4e5f60718');
@@ -125,11 +139,8 @@ $o = Xsunaba::Helper::parse_args( @$base, '--amnesiac', '--', '/bin/true' );
 ok( $o->{amnesiac}, '--amnesiac parsed' );
 
 # --- Stale-session identification patterns ---------------------------
-for my $bad ( '..', '.', 'x' x 31 . 'x',
-    '_xsunaba_zzzzzzzzzzzzzzzz', '0000000000000000000000000000000X' )
-{
-    like( '', qr//, 'no-op' );    # keep plan alignment simple
-}
+# The reaper accepts only 32 lowercase hex characters as session
+# directory names; every other form must be rejected.
 my $ok_token   = '0123456789abcdef0123456789abcdef';
 my $bad_tokens = [
     '..',                              '.',

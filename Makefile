@@ -70,10 +70,13 @@ install-users:
 # manually; Xsunaba never edits /etc/doas.conf itself.
 .PHONY: show-doas-rule
 show-doas-rule:
-	@printf "# Xsunaba: launch sandbox sessions through the root helper\n"
-	@printf "permit nopass USER as root cmd ${LIBEXECDIR}/${HELPER} \\\n"
-	@printf "        args --parent-display\n"
-	@printf "# Replace USER with your login name, or :wheel with a group.\n"
+	@printf '%s\n' "# Xsunaba: launch sandbox sessions through the root helper." \
+	  "# doas inherits only DISPLAY and TERM by default; setenv keeps" \
+	  "# the locale/timezone variables the helper forwards to the app." \
+	  "permit nopass setenv { TZ LANG LC_ALL LC_CTYPE LC_MESSAGES } \\" \
+	  "        USER as root cmd ${LIBEXECDIR}/${HELPER} \\" \
+	  "        args --parent-display" \
+	  "# Replace USER with your login name, or :wheel with a group."
 
 .PHONY: uninstall
 uninstall:
@@ -90,30 +93,40 @@ test:
 	prove -I t/lib -v t/
 
 # Build the optional X11 popup/pointer-grab regression tool used to
-# validate input handling inside the nested server.
+# validate input handling inside the nested server. Detection happens
+# in the recipe with portable shell so this works with both GNU make
+# and OpenBSD make: use pkg-config when present, otherwise the base
+# X11 paths (OpenBSD has no pkg-config, but ships X11 in /usr/X11R6).
 .PHONY: tools
 tools: tools/popup-grab-test
 
 tools/popup-grab-test: tools/popup-grab-test.c
-	cc -Wall -Wextra -Wpedantic -Wshadow -Wconversion -O2 \
-		$$(pkg-config --cflags --libs x11) \
-		tools/popup-grab-test.c -o tools/popup-grab-test
+	@if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists x11; \
+	then \
+		cc -Wall -Wextra -Wpedantic -Wshadow -Wconversion -O2 \
+			$$(pkg-config --cflags x11) tools/popup-grab-test.c \
+			-o $@ $$(pkg-config --libs x11); \
+	else \
+		cc -Wall -Wextra -Wpedantic -Wshadow -Wconversion -O2 \
+			-I/usr/X11R6/include tools/popup-grab-test.c \
+			-o $@ -L/usr/X11R6/lib -lX11; \
+	fi
 
 .PHONY: help
 help:
-	@printf "\nMakefile targets:\n\
-	  all            - Default target, installs the script, helper and man page\n \
-	  build          - Build target, does nothing (pure Perl)\n \
-	  install        - Installs the script, helper and man page\n \
-	  install-users  - Creates the dedicated sandbox accounts (as root)\n \
-	  show-doas-rule - Prints the doas.conf rule to review and install\n \
-	  uninstall      - Removes the script, helper and man page\n \
-	  test           - Runs the regression tests\n \
-	  tools          - Builds the popup-grab input regression tool\n \
-	  clean          - Removes artifacts\n \
-	  help           - Displays this help message\n\n"
+	@printf '%s\n' '' 'Makefile targets:' \
+	  '  all            - Default target, installs the script, helper and man page' \
+	  '  build          - Build target, does nothing (pure Perl)' \
+	  '  install        - Installs the script, helper and man page' \
+	  '  install-users  - Creates the dedicated sandbox accounts (as root)' \
+	  '  show-doas-rule - Prints the doas.conf rule to review and install' \
+	  '  uninstall      - Removes the script, helper and man page' \
+	  '  test           - Runs the regression tests' \
+	  '  tools          - Builds the popup-grab input regression tool' \
+	  '  clean          - Removes artifacts' \
+	  '  help           - Displays this help message' ''
 
 .PHONY: clean
 clean:
-	rm -f tools/popup-grab-test
+	rm -f tools/popup-grab-test tools/popup-grab-test.log
 	@echo "${INFO} Clean complete"

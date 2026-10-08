@@ -2,6 +2,7 @@
 
 use strict;
 use warnings;
+no warnings qw(once);
 use Test::More;
 use File::Temp qw(tempdir);
 use FindBin;
@@ -166,5 +167,10 @@ print {$bfh} 'x' x ( $Xsunaba::Helper::MAX_XAUTH + 10 );
 close $bfh;
 dies_ok { Xsunaba::Helper::read_xauth_file($big) }
 qr/size limit/, 'oversized authority file rejected';
+
+# A read error must be reported, not silently treated as an empty
+# authority database (reading a directory yields EISDIR).
+dies_ok { Xsunaba::Helper::read_xauth_file($dir) }
+qr/(?:read|open)/, 'unreadable authority file fails closed';
 
 done_testing;
