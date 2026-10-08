@@ -223,10 +223,18 @@ sub launch {
     # fail closed if the frontend itself cannot be restricted.
     if ( $^O eq 'openbsd' ) {
         require OpenBSD::Pledge;
-        OpenBSD::Pledge::pledge('stdio exec')
+
+        # OpenBSD::Pledge::pledge takes a list of promises and adds
+        # "stdio" itself; passing one space-joined string is not the
+        # documented interface.
+        OpenBSD::Pledge::pledge(qw(stdio exec))
           or die "pledge: $!";
     }
 
+    # Check executability first so a missing doas fails with our own
+    # message instead of Perl's "Can't exec" warning. $! is set by -x.
+    -x $DOAS_BIN
+      or die "exec $DOAS_BIN: $!";
     exec $DOAS_BIN, $HELPER, @argv;
     die "exec $DOAS_BIN: $!";
 }

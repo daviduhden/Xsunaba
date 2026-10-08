@@ -126,11 +126,13 @@ $ doas make install-users  # creates the dedicated accounts
 ```
 
 Then review and append the following rule to `/etc/doas.conf`
-(`make show-doas-rule` prints it). Replace `<USER>` with your login
+(`make show-doas-rule` prints it). Replace `USER` with your login
 name, or `:wheel` with a suitable group:
 
 ```
-permit nopass <USER> as root cmd /usr/local/libexec/xsunaba-helper args --parent-display
+permit nopass setenv { TZ LANG LC_ALL LC_CTYPE LC_MESSAGES } \
+        USER as root cmd /usr/local/libexec/xsunaba-helper \
+        args --parent-display
 ```
 
 The rule grants execution of **only** the root-owned helper, only
@@ -138,6 +140,12 @@ with invocations that start with `--parent-display`. It grants nothing
 else as root. It deliberately does **not** grant arbitrary execution
 as the sandbox accounts: every operation must go through the helper's
 validated interface.
+
+`doas` builds a fresh environment for the helper and only inherits
+`DISPLAY` and `TERM` by default; the `setenv` option keeps the
+timezone and locale variables that the helper forwards to the
+application. Without it, `TZ`, `LANG` and `LC_*` are silently dropped
+and the sandbox falls back to the C locale and UTC.
 
 `make install-users` creates:
 
@@ -322,11 +330,21 @@ Authentication material never appears in any output.
 | `WIDTH` | `1024` | Initial Xephyr display width in pixels (resizable afterwards). |
 | `HEIGHT` | `768` | Initial Xephyr display height in pixels (resizable afterwards). |
 | `VERBOSE` | _(unset)_ | Emit diagnostic messages. |
+| `XSUNABA_VERBOSE` | _(unset)_ | Alias for `VERBOSE` understood by the frontend. |
+| `XSUNABA_PLEDGE` | _(unset)_ | Must be empty; a non-empty value is rejected (see below). |
+
+A non-empty `XSUNABA_PLEDGE` value is rejected: `OpenBSD::Pledge`
+does not expose the `execpromises` argument of pledge(2), so a
+promise could not restrict an executed program and would silently
+fail to apply.
 
 The application's environment is rebuilt from scratch and contains
 only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `DISPLAY`,
-`XAUTHORITY`, `XDG_RUNTIME_DIR`, and (if present in the invoking
-environment) `TERM`, `TZ`, `LANG` and `LC_*`. Variables such as
+`XAUTHORITY`, `XDG_RUNTIME_DIR`, and (if present) `TERM`, `TZ`,
+`LANG`, `LC_ALL`, `LC_CTYPE` and `LC_MESSAGES`. `TERM` is inherited
+by `doas` automatically; the timezone and locale variables reach the
+helper only when the `doas.conf` rule uses `setenv` (see
+Installation). Variables such as
 `DBUS_SESSION_BUS_ADDRESS`, `SSH_AUTH_SOCK`, `SSH_AGENT_PID`,
 `GPG_AGENT_INFO`, `WAYLAND_DISPLAY`, `SESSION_MANAGER`,
 `XDG_SESSION_*`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
@@ -374,6 +392,8 @@ XSUNABA_UNVEIL="/usr/X11R6/bin/xterm:rx,/tmp:rwc,/etc:r,/dev:r"
 | Path | Owner | Mode | Purpose |
 |---|---|---|---|
 | `/var/run/xsunaba/` | root:wheel | 0711 | Session runtime directory (created by the helper). |
+| `/var/run/xsunaba/display.lock` | root:wheel | 0600 | Serializes nested-display allocation across helpers. |
+| `/var/run/xsunaba/reaper.lock` | root:wheel | 0600 | Serializes stale amnesiac-session reaping. |
 | `/var/run/xsunaba/<random>/` | root:wheel | 0711 | One session. Traversable but not listable by users. |
 | `.../active.lock` | root:wheel | 0600 | Amnesiac liveness lock; stale sessions are reaped when it is free. |
 | `.../account` | root:wheel | 0600 | Amnesiac session's account name (reaping verification). |

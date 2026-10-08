@@ -31,6 +31,15 @@ for my $f ( $helper, $front ) {
         qr/-listen\s+tcp|tcp\s+listen/,
         "TCP listen never enabled: $f"
     );
+
+    # OpenBSD::Pledge::pledge(@promises) takes a list and adds stdio
+    # itself; one space-joined string is not the documented interface
+    # (it only worked because the module rejoins the arguments).
+    unlike(
+        $src,
+        qr/OpenBSD::Pledge::pledge\s*\(\s*['"][^'"]*\s[^'"]*['"]\s*\)/,
+        "pledge called with a promise list, not a space-joined string: $f"
+    );
 }
 
 # Privilege transition is explicit and verified in the helper
@@ -50,6 +59,11 @@ like(
     $src,
     qr/getuid\(\)\s*==\s*0\s*&&\s*geteuid\(\)\s*==\s*0/,
     'root required'
+);
+like(
+    $src,
+    qr/exec \{\s*\$opts->\{app\}\s*\}/,
+    'application exec avoids the shell (indirect-object form)'
 );
 like( $src, qr/SOCKET_MODE/, 'socket mode restricted' );
 like( $src, qr/umask\s+077/, 'umask 077 for session data' );

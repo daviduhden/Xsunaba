@@ -28,9 +28,17 @@ use Exporter qw(import);
 use Fcntl    qw(O_CREAT O_EXCL O_RDONLY O_RDWR O_WRONLY :flock
   S_IFMT S_IFSOCK S_IFDIR);
 use File::Path qw(remove_tree);
-use POSIX      qw(_exit WNOHANG getegid geteuid getgid getgroups getgrnam
-  getpwnam getuid setgid setuid);
+use POSIX      qw(_exit WNOHANG getegid geteuid getgid getgroups
+  getuid setgid setuid);
 use Sys::Hostname qw(hostname);
+use User::grent;
+use User::pwent;
+
+# User::pwent/User::grent override getpwnam/getpwuid/getgrnam/getgrgid
+# so they return objects. The rest of this file relies on that object
+# interface (->uid, ->gid, ->dir, ->shell, ->members); without these
+# imports getpwnam() in scalar context yields a numeric uid and every
+# ->method call below would abort the session.
 
 our @EXPORT_OK = qw(
   parse_args find_free_display socket_path xauth_record_bytes
@@ -146,8 +154,9 @@ sub parse_args {
     die "no application specified\n" unless @app;
     die "too many application arguments\n" if @app > 256;
 
-    my ($pd) = $o{parent_display} =~ /\A(:[0-9]{1,4}(?:\.[0-9]{1,4})?)\z/
-      or die "invalid parent display '$o{parent_display}'\n";
+    my $pd_raw = $o{parent_display} // '';
+    my ($pd) = $pd_raw =~ /\A(:[0-9]{1,4}(?:\.[0-9]{1,4})?)\z/;
+    $pd // die "invalid parent display '$pd_raw'\n";
     $o{parent_display} = $pd;
 
     my $px = _untaint( $o{parent_xauth}, 'parent Xauthority path' );
@@ -369,14 +378,15 @@ sub read_xauth_file {
       or die "open $path: $!";
     my $data = '';
     my $size = 0;
-    my $buf  = '';
-    while ( sysread( $fh, $buf, 4096 ) ) {
-        $size += length $buf;
+    while (1) {
+        my $n = sysread( $fh, my $buf, 4096 );
+        defined $n or die "read $path: $!";
+        last if $n == 0;
+        $size += $n;
         die "$path exceeds size limit\n" if $size > $MAX_XAUTH;
         $data .= $buf;
     }
-    defined $buf or die "read $path: $!";
-    close $fh    or die "close $path: $!";
+    close $fh or die "close $path: $!";
     return parse_xauth_bytes($data);
 }
 
@@ -591,13 +601,13 @@ sub run {
     if ( defined $doas_user && length $doas_user ) {
         my ($user) = $doas_user =~ /\A([a-z_][a-z0-9_-]{0,30})\z/
           or die_tool "invalid DOAS_USER";
-        my @pw = getpwnam($user)
+        my $pw = getpwnam($user)
           or die_tool "DOAS_USER '$user' unknown";
         my @st = stat $opts->{parent_xauth}
           or die_tool "stat $opts->{parent_xauth}: $!";
         -f _
           or die_tool "$opts->{parent_xauth} is not a regular file";
-        $st[4] == $pw[2]
+        $st[4] == $pw->uid
           or die_tool "$opts->{parent_xauth} is not owned by '$user'";
     }
 
@@ -804,6 +814,10 @@ sub run {
     close $lock;
     logi "socket $socket restricted to " . sprintf( '%o', $SOCKET_MODE );
 
+    # Honour a signal that arrived before the application was started
+    # (the handler only kills children that already exist).
+    $fatal->("interrupted before launching the application") if $aborted;
+
     # --- Application, as the dedicated application UID ---
     $app_pid = fork();
     defined $app_pid or $fatal->("fork: $!");
@@ -842,7 +856,10 @@ sub run {
             OpenBSD::Unveil::unveil()
               or _err("unveil lock: $!"), _exit(1);
         }
-        { exec $opts->{app}, @{ $opts->{app_args} } }
+        # Indirect-object exec: never fall back to a shell, even when
+        # the application has no arguments (a single scalar argument
+        # containing metacharacters would otherwise be shell-parsed).
+        { exec { $opts->{app} } $opts->{app}, @{ $opts->{app_args} } }
         _err "exec $opts->{app}: $!";
         _exit(1);
     }
@@ -852,10 +869,10 @@ sub run {
     # than during teardown. exec/getpw cover the account-management
     # commands (userdel/groupdel/pkill) and passwd-database lookups
     # used by amnesiac cleanup. Fail closed: a failed pledge tears the
-    # session down.
-    unless (
-        OpenBSD::Pledge::pledge('stdio rpath cpath fattr proc exec getpw') )
-    {
+    # session down. pledge() takes a list of promises (it adds stdio
+    # itself), not one space-separated string.
+    my @promises = qw(stdio rpath cpath fattr proc exec getpw);
+    unless ( OpenBSD::Pledge::pledge(@promises) ) {
         $fatal->("pledge failed: $!");
     }
 
@@ -908,7 +925,11 @@ sub _ensure_run_dir {
 
 sub _hostname {
     my $host = hostname();
-    my ($clean) = $host =~ /\A([[:alnum:].-]{1,255})\z/
+    # The address field of a FamilyLocal MIT-MAGIC-COOKIE-1 record must
+    # match what the Xlib client computes from gethostname(3), so keep
+    # the value as-is. Only reject NUL bytes and overlong names (the
+    # authority format length-prefixes arbitrary bytes).
+    my ($clean) = $host =~ /\A([^\0]{1,255})\z/
       or die "invalid hostname\n";
     return $clean;
 }
@@ -974,6 +995,17 @@ sub _amnesiac_create {
         my $rc = _run_cmd( build_useradd_argv( $user, $home ) );
         if ( $rc == 0 ) {
             $am->{user_created} = 1;
+            # Record the name immediately: if any later step fails,
+            # teardown must still be able to delete this account. Also
+            # write the session's own account file now, so a crash
+            # between account creation and home creation is still
+            # recoverable by the stale-session reaper.
+            $am->{user} = $user;
+            sysopen( my $af, "$session/account",
+                O_CREAT | O_EXCL | O_WRONLY, 0600 )
+              or $fatal->("open $session/account: $!");
+            print {$af} "$user\n" or $fatal->("write $session/account: $!");
+            close $af             or $fatal->("close $session/account: $!");
             last;
         }
         $user = undef;
@@ -981,10 +1013,10 @@ sub _amnesiac_create {
     $fatal->("useradd failed for amnesiac account")
       unless $am->{user_created};
 
-    my @pw = getpwnam($user) or $fatal->("cannot resolve $user");
-    $uid  = $pw[2];
-    $gid  = $pw[3];
-    $home = $pw[7];
+    my $pw = getpwnam($user) or $fatal->("cannot resolve $user");
+    $uid  = $pw->uid;
+    $gid  = $pw->gid;
+    $home = $pw->dir;
     $fatal->("amnesiac account $user has uid 0") if $uid == 0;
     $fatal->("amnesiac account $user has gid 0") if $gid == 0;
     $fatal->("amnesiac account $user shares the Xephyr UID")
@@ -992,9 +1024,8 @@ sub _amnesiac_create {
     $fatal->("unexpected home '$home' for $user")
       unless $home eq ephemeral_home_for($user);
 
-    # Record the identity as soon as it is known so teardown covers
-    # every partially completed step below.
-    $am->{user} = $user;
+    # Record the rest of the identity as soon as it is known so
+    # teardown covers every partially completed step below.
     $am->{uid}  = $uid;
     $am->{gid}  = $gid;
     $am->{home} = $home;
@@ -1002,13 +1033,6 @@ sub _amnesiac_create {
     mkdir $home, 0700 or $fatal->("mkdir $home: $!");
     chown( $uid, $gid, $home ) == 1 or $fatal->("chown $home: $!");
     $am->{home_created} = 1;
-
-    # Record the account in the session dir so stale-session reaping
-    # can map a session to its account.
-    sysopen( my $af, "$session/account", O_CREAT | O_EXCL | O_WRONLY, 0600 )
-      or $fatal->("open $session/account: $!");
-    print {$af} "$user\n" or $fatal->("write $session/account: $!");
-    close $af             or $fatal->("close $session/account: $!");
 }
 
 #
@@ -1039,13 +1063,13 @@ sub _amnesiac_teardown {
 
     remove_tree( $session, { safe => 1 } );
 
-    if ( $am->{home_created}
-        && home_safe_to_delete( $am->{home}, $am->{user}, $am->{uid} ) )
-    {
-        remove_tree( $am->{home}, { safe => 1 } );
-    }
-    else {
-        logw "refusing to remove home of $am->{user}";
+    if ( $am->{home_created} ) {
+        if ( home_safe_to_delete( $am->{home}, $am->{user}, $am->{uid} ) ) {
+            remove_tree( $am->{home}, { safe => 1 } );
+        }
+        else {
+            logw "refusing to remove home of $am->{user}";
+        }
     }
 
     return unless $procs_gone;
@@ -1099,23 +1123,27 @@ sub reap_stale_sessions {
             close $af;
             chomp $user if defined $user;
         }
-        if (   defined $user
-            && $user =~ /\A\Q$EPHEMERAL_PREFIX\E[0-9a-f]{16}\z/
-            && ( my @pw = getpwnam($user) ) )
+        my $pw;
+        if ( defined $user
+            && $user =~ /\A\Q$EPHEMERAL_PREFIX\E[0-9a-f]{16}\z/ )
         {
-            my ( $uid, $gid ) = @pw[ 2, 3 ];
+            $pw = getpwnam($user);
+        }
+        if ($pw) {
+            my ( $uid, $gid ) = ( $pw->uid, $pw->gid );
             _run_cmd( build_pkill_argv( 'TERM', $uid ) );
             select undef, undef, undef, 0.1;
             _run_cmd( build_pkill_argv( 'KILL', $uid ) );
             my $alive = _run_cmd( build_pkill_argv( '0', $uid ) );
             if ( $alive != 0 ) {
                 my $home = ephemeral_home_for($user);
-                if ( $pw[7] eq $home
+                if ( $pw->dir eq $home
                     && home_safe_to_delete( $home, $user, $uid ) )
                 {
                     remove_tree( $home, { safe => 1 } );
                 }
-                _run_cmd( build_userdel_argv($user) );
+                _run_cmd( build_userdel_argv($user) ) == 0
+                  or logw "userdel $user failed; stale account left";
                 my $grp = getgrnam($user);
                 if (   $grp
                     && $grp->gid == $gid

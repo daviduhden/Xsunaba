@@ -140,7 +140,8 @@ The helper is deliberately small and only reachable through a narrow
 .Xr doas.conf 5
 rule:
 .Bd -literal -offset indent
-permit nopass USER as root cmd /usr/local/libexec/xsunaba-helper \e
+permit nopass setenv { TZ LANG LC_ALL LC_CTYPE LC_MESSAGES } \e
+        USER as root cmd /usr/local/libexec/xsunaba-helper \e
         args --parent-display
 .Ed
 .Pp
@@ -148,6 +149,15 @@ The rule permits only the helper executable, as root, and only
 invocations starting with
 .Fl -parent-display .
 It grants nothing else.
+.Xr doas 1
+inherits only
+.Ev DISPLAY
+and
+.Ev TERM
+by default; the
+.Ic setenv
+option keeps the timezone and locale variables that the helper
+forwards to the application.
 The caller cannot supply an arbitrary Xauthority file for the nested
 display, an existing DISPLAY to join, a UID, a session directory, a
 socket pathname or other values that would permit joining another
@@ -255,10 +265,19 @@ or, if unset,
 The application's environment is rebuilt and contains only
 .Ev PATH , HOME , USER , LOGNAME , SHELL , DISPLAY , XAUTHORITY ,
 .Ev XDG_RUNTIME_DIR ,
-and, if present in the invoking environment,
-.Ev TERM , TZ , LANG
+and, if present,
+.Ev TERM , TZ , LANG , LC_ALL , LC_CTYPE
 and
-.Ev LC_* .
+.Ev LC_MESSAGES .
+.Ev TERM
+is inherited by
+.Xr doas 1
+automatically; the timezone and locale variables reach the helper
+only when the
+.Xr doas.conf 5
+rule uses
+.Ic setenv
+.Pq see Sx PRIVILEGED HELPER .
 Variables such as
 .Ev DBUS_SESSION_BUS_ADDRESS , SSH_AUTH_SOCK , SSH_AGENT_PID ,
 .Ev GPG_AGENT_INFO , WAYLAND_DISPLAY , SESSION_MANAGER ,
@@ -357,6 +376,12 @@ Root-owned privileged session helper, invoked through
 .Xr doas 1 .
 .It Pa /var/run/xsunaba/
 Root-owned runtime directory (mode 0711), created by the helper.
+.It Pa /var/run/xsunaba/display.lock
+Lock serializing nested-display allocation across helpers
+(mode 0600, root).
+.It Pa /var/run/xsunaba/reaper.lock
+Lock serializing stale amnesiac-session reaping
+(mode 0600, root).
 .It Pa /var/run/xsunaba/ Ns Ar random Ns Pa /xephyr/
 Session directory of the Xephyr account (mode 0700).
 .It Pa .../xephyr/parent-auth
