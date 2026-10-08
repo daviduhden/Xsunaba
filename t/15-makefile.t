@@ -29,8 +29,7 @@ like(
 );
 unlike( $rule, qr/\\n/, 'no literal backslash-n leaked into the rule' );
 my @continuations = ( $rule =~ /\\$/mg );
-ok( @continuations >= 2,
-    'rule uses real backslash-newline continuations' );
+ok( @continuations >= 2, 'rule uses real backslash-newline continuations' );
 
 my $help = `make -C "$root" -s help 2>&1`;
 is( $? >> 8, 0, 'make help exits 0' );

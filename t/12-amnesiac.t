@@ -16,8 +16,10 @@ require "$FindBin::Bin/../libexec/xsunaba-helper";
 my $root_pw = Xsunaba::Helper::getpwuid(0);
 ok( ref($root_pw) && $root_pw->uid == 0,
     'getpwuid returns a User::pwent object (->uid works)' );
-ok( defined $root_pw->dir && defined $root_pw->shell,
-    'passwd object exposes ->dir and ->shell' );
+ok(
+    defined $root_pw->dir && defined $root_pw->shell,
+    'passwd object exposes ->dir and ->shell'
+);
 my $root_gr = Xsunaba::Helper::getgrgid(0);
 ok( ref($root_gr) && $root_gr->gid == 0,
     'getgrgid returns a User::grent object (->gid works)' );
