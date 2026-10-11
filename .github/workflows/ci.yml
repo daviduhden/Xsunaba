@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  # Fast, portable subset. Runs on the host runner and catches pure-Perl
+  # regressions without booting a VM.
+  unit-linux:
+    name: Unit tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the test suite
+        run: prove -I t/lib t/
+
+  # Real OpenBSD. This is where the platform-specific behaviour is
+  # exercised: availability of OpenBSD::Pledge/OpenBSD::Unveil, the
+  # taint semantics of the OpenBSD Perl (-T), bmake targets and the man
+  # page. X11 is deliberately not required: the optional Xephyr
+  # integration test (t/95) self-skips when no display is configured.
+  unit-openbsd:
+    name: Unit tests (OpenBSD)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test on OpenBSD
+        uses: vmactions/openbsd-vm@v1
+        with:
+          release: "7.9"
+          run: |
+            set -e
+            uname -a
+            perl -v | head -2
+            perl -T -c libexec/xsunaba-helper
+            perl -c bin/Xsunaba.pl
+            prove -I t/lib t/
+            make -s show-doas-rule
