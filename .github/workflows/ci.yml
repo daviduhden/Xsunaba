@@ -11,7 +11,7 @@ jobs:
     name: Unit tests (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run the test suite
         run: prove -I t/lib t/
 
@@ -24,7 +24,7 @@ jobs:
     name: Unit tests (OpenBSD)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build and test on OpenBSD
         uses: vmactions/openbsd-vm@v1
         with:
