@@ -10,6 +10,28 @@ use FindBin;
 
 require "$FindBin::Bin/../bin/Xsunaba.pl";
 
+# --- Command resolution --------------------------------------------
+# The helper requires an absolute program path, but the CLI accepts a
+# bare command name; launch() resolves it through PATH.
+{
+    my $dir = tempdir( CLEANUP => 1 );
+    my $exe = "$dir/mytool";
+    open my $fh, '>', $exe or die $!;
+    close $fh;
+    chmod 0755, $exe or die $!;
+
+    is( Xsunaba::resolve_app( 'mytool', $dir ), $exe,
+        'bare name resolved through the given PATH' );
+    is( Xsunaba::resolve_app( '/usr/bin/xterm' ), '/usr/bin/xterm',
+        'absolute path left unchanged' );
+    is( Xsunaba::resolve_app( './local', $dir ), './local',
+        'name containing a slash left unchanged' );
+    ok( !defined Xsunaba::resolve_app( 'no-such-tool-xyz', $dir ),
+        'unknown command is undefined' );
+    ok( !defined Xsunaba::resolve_app( 'mytool', 'bin' ),
+        'relative PATH entries are ignored' );
+}
+
 # --- Helper argv construction --------------------------------------
 my @argv = Xsunaba::build_helper_argv(
     parent_display => ':0',
@@ -169,6 +191,72 @@ FAKE
     );
 }
 
+# A bare command name must be resolved through PATH before reaching the
+# helper, which requires an absolute application path.
+{
+    local %ENV = %base_env;
+    delete @ENV{
+        qw(XSUNABA_PLEDGE XSUNABA_UNVEIL XSUNABA_DISPLAY
+          WIDTH HEIGHT VERBOSE XSUNABA_VERBOSE)
+    };
+    my $bin = "$dir/bin";
+    mkdir $bin or die $!;
+    my $tool = "$bin/mytool";
+    open my $tf, '>', $tool or die $!;
+    close $tf;
+    chmod 0755, $tool or die $!;
+
+    $ENV{HOME}       = $dir;
+    $ENV{DISPLAY}    = ':0';
+    $ENV{XAUTHORITY} = $xauth;
+    $ENV{PATH}       = $bin;
+
+    my $fake = "$dir/fake-doas-resolve";
+    my $out  = "$dir/doas-argv-resolve";
+    open my $s, '>', $fake or die $!;
+    my $perl = $^X;
+    print {$s} "#!$perl\n";
+    print {$s} <<'FAKE';
+#!/usr/bin/perl
+use strict;
+use warnings;
+open my $fh, '>', $ENV{FAKE_DOAS_OUT} or die $!;
+print {$fh} join("\0", @ARGV), "\0";
+close $fh;
+FAKE
+    close $s;
+    chmod 0755, $fake or die $!;
+    local $Xsunaba::DOAS_BIN = $fake;
+
+    my $pid = fork();
+    die "fork: $!" unless defined $pid;
+    if ( $pid == 0 ) {
+        $ENV{FAKE_DOAS_OUT} = $out;
+        Xsunaba::launch( app => 'mytool', args => ['--flag'] );
+        exit 0;
+    }
+    waitpid( $pid, 0 );
+    is( $? >> 8, 0, 'bare command launch execs the helper cleanly' );
+    open my $rf, '<', $out or die $!;
+    my $raw = do { local $/; <$rf> };
+    close $rf;
+    my @got = split /\0/, $raw, -1;
+    pop @got;
+    is_deeply(
+        \@got,
+        [
+            $Xsunaba::HELPER, '--parent-display',
+            ':0',             '--parent-xauth',
+            $xauth,           '--display',
+            '32',             '--width',
+            '1024',           '--height',
+            '768',            '--',
+            $tool,            '--flag',
+        ],
+        'bare name resolved to an absolute path for the helper',
+    );
+}
+
 {
     local %ENV = %base_env;
     $ENV{HOME}           = $dir;
@@ -222,6 +310,11 @@ FAKE
     $ENV{HOME}       = $dir;
     $ENV{DISPLAY}    = ':0';
     $ENV{XAUTHORITY} = $xauth;
+
+    # Point at a doas that does not exist so the failure is deterministic
+    # on every platform. Using the real $DOAS_BIN would exec it on
+    # OpenBSD (where doas is installed) and replace the test process.
+    local $Xsunaba::DOAS_BIN = "$dir/no-such-dir/doas";
     eval {
         Xsunaba::launch(
             app     => '/usr/bin/xterm',
@@ -230,7 +323,11 @@ FAKE
             height  => 800
         );
     };
-    like( $@, qr/exec \/usr\/bin\/doas/, 'real doas missing on Linux' );
+    like(
+        $@,
+        qr/exec .*doas/,
+        'a non-executable doas fails with a clear message'
+    );
 }
 
 # --- Amnesiac end-to-end argv and browser-geometry neutrality -------

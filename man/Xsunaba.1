@@ -141,14 +141,18 @@ The helper is deliberately small and only reachable through a narrow
 rule:
 .Bd -literal -offset indent
 permit nopass setenv { TZ LANG LC_ALL LC_CTYPE LC_MESSAGES } \e
-        USER as root cmd /usr/local/libexec/xsunaba-helper \e
-        args --parent-display
+        USER as root cmd /usr/local/libexec/xsunaba-helper
 .Ed
 .Pp
-The rule permits only the helper executable, as root, and only
-invocations starting with
-.Fl -parent-display .
-It grants nothing else.
+The rule permits only the helper executable, as root, and grants
+nothing else.
+The
+.Xr doas.conf 5
+.Ic args
+option matches the complete argument list exactly and cannot express
+the per-session display, geometry and application arguments, so the
+helper's own parser is the argument gate and rejects unsupported or
+malformed arguments.
 .Xr doas 1
 inherits only
 .Ev DISPLAY
@@ -257,6 +261,9 @@ set to a local display
 and
 .Ev HOME
 set.
+The application command is either a bare name, resolved through
+.Ev PATH ,
+or an absolute path; it must be executable by the invoking user.
 The parent X authority is taken from
 .Ev XAUTHORITY
 or, if unset,

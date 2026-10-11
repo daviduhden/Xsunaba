@@ -174,8 +174,14 @@ main(int argc, char **argv)
 				printf("popup opened at %d,%d; pointer grabbed\n",
 				    x, y);
 				fflush(stdout);
-		/* swallow the grab's synthetic enter event */
-				XWindowEvent(dpy, popup, EnterWindowMask, &sev);
+				/*
+				 * Drain the grab's synthetic enter event if it
+				 * is already queued; never block on it (it may
+				 * not be generated at all) and ignore it.
+				 */
+				while (XCheckMaskEvent(dpy, EnterWindowMask,
+				    &sev))
+					;
 			}
 			break;
 		case MotionNotify:

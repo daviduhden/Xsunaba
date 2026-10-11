@@ -4,6 +4,7 @@ use strict;
 use warnings;
 use Test::More;
 use FindBin;
+use File::Temp qw(tempdir);
 use lib "$FindBin::Bin/lib";
 use TestHelper qw(dies_ok);
 
@@ -153,5 +154,59 @@ for my $t (@$bad_tokens) {
     ok( $t !~ /\A[0-9a-f]{32}\z/, "token rejected: $t" );
 }
 ok( $ok_token =~ /\A[0-9a-f]{32}\z/, 'valid session token accepted' );
+
+# --- stale_session_tokens -------------------------------------------
+# The reaper must return only the 32-hex directory names, and the value
+# must be untainted: reap_stale_sessions() runs under -T and uses it to
+# build paths and command arguments, which reject tainted strings.
+my @tokens = Xsunaba::Helper::stale_session_tokens(
+    '.', '..', $ok_token, '0123456789abcdef0123456789abcde',
+    'X123456789abcdef0123456789abcdef', 'not-a-token',
+);
+is_deeply( \@tokens, [$ok_token],
+    'only exact 32-hex session names are returned' );
+is( scalar( Xsunaba::Helper::stale_session_tokens() ), 0,
+    'no names yields no tokens' );
+
+# Taint is only observable in a -T interpreter, so probe in a child:
+# run the real reaper against a synthetic, pre-crashed session. If any
+# readdir()/account value leaked taint, open()/unlink() would abort.
+{
+    my $helper = "$FindBin::Bin/../libexec/xsunaba-helper";
+    my $dir    = tempdir( CLEANUP => 1 );
+    my $probe  = "$dir/probe.pl";
+    open my $pf, '>', $probe or die $!;
+    print {$pf} <<'PROBE';
+use strict;
+use warnings;
+my ( $helper, $rundir, $token ) = @ARGV;
+# -T taints @ARGV; untaint only the values this probe needs as paths.
+($helper) = $helper =~ m{\A(.+)\z};
+($rundir) = $rundir =~ m{\A(.+)\z};
+($token)  = $token  =~ m{\A(.+)\z};
+require $helper;
+
+no warnings 'once';
+local $Xsunaba::Helper::RUN_DIR = $rundir;
+my $session = "$rundir/$token";
+mkdir $session or die "mkdir $session: $!\n";
+open my $lf, '>', "$session/active.lock" or die "$!\n";
+close $lf;
+open my $af, '>', "$session/account" or die "$!\n";
+print {$af} "_xsunaba_ffffffffffffffff\n";
+close $af;
+
+# This must not abort under -T (taint) and must remove the session.
+Xsunaba::Helper::reap_stale_sessions();
+die "session not removed\n" if -e $session;
+print "REAPED\n";
+PROBE
+    close $pf;
+
+    my $out = `$^X -T $probe $helper $dir $ok_token 2>&1`;
+    is( $? >> 8, 0, 'reaper runs and reaps under -T without taint failures' )
+      or diag($out);
+    like( $out, qr/REAPED/, 'reaper confirmed the synthetic session removed' );
+}
 
 done_testing;

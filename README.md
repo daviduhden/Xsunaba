@@ -131,15 +131,17 @@ name, or `:wheel` with a suitable group:
 
 ```
 permit nopass setenv { TZ LANG LC_ALL LC_CTYPE LC_MESSAGES } \
-        USER as root cmd /usr/local/libexec/xsunaba-helper \
-        args --parent-display
+        USER as root cmd /usr/local/libexec/xsunaba-helper
 ```
 
-The rule grants execution of **only** the root-owned helper, only
-with invocations that start with `--parent-display`. It grants nothing
-else as root. It deliberately does **not** grant arbitrary execution
-as the sandbox accounts: every operation must go through the helper's
-validated interface.
+The rule grants execution of **only** the root-owned helper, as root.
+It grants nothing else. It deliberately does **not** grant arbitrary
+execution as the sandbox accounts: every operation must go through the
+helper's validated interface. `doas.conf`'s `args` option matches the
+complete argument list exactly (it cannot express a prefix), so a fixed
+argument list cannot cover a session whose display, geometry and
+application vary; the helper's own parser is the argument gate and
+rejects every unsupported or malformed argument.
 
 `doas` builds a fresh environment for the helper and only inherits
 `DISPLAY` and `TERM` by default; the `setenv` option keeps the
@@ -177,6 +179,9 @@ $ Xsunaba chrome --incognito &
 $ Xsunaba xterm &
 $ Xsunaba gimp &
 ```
+
+A bare command name is resolved through your `PATH` (as a shell would);
+an absolute path is used as given.
 
 The application runs as `_xsunaba_app` inside a Xephyr window owned
 by `_xsunaba_xephyr`. No filesystem restrictions are applied unless
