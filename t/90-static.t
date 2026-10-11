@@ -71,6 +71,36 @@ like( $src, qr/\buseradd\b/, 'amnesiac account creation present' );
 like( $src, qr/\buserdel\b/, 'amnesiac account deletion present' );
 like( $src, qr/pkill/,       'uid-bounded process cleanup present' );
 
+# The reaper turns readdir()/account-file data into pathnames while
+# running under -T, so the values must be captured to clear taint.
+like(
+    $src,
+    qr/sub stale_session_tokens/,
+    'reaper session-name filter is a capture-based helper'
+);
+like( $src, qr/stale_session_tokens\( readdir /,
+    'reaper filters session names through stale_session_tokens' );
+
+# flock(2) locks are shared across fork(2); the exec'd children must
+# close the helper's lock descriptors or they keep the locks for the
+# whole session.
+like( $src, qr/close \$lock;/, 'display lock closed in the child' );
+like( $src, qr/close \$am->\{lock_fh\}/, 'liveness lock closed in children' );
+
+# The frontend must not stat()/access() after pledging stdio+exec: -x
+# uses the rpath promise, and a pledge violation aborts the process.
+{
+    open my $ffh, '<', $front or die $!;
+    my $fsrc = do { local $/; <$ffh> };
+    close $ffh;
+    my $pledge_at = index( $fsrc, 'OpenBSD::Pledge::pledge(qw(stdio exec))' );
+    my $x_at      = index( $fsrc, '-x $DOAS_BIN' );
+    ok(
+        $pledge_at >= 0 && $x_at >= 0 && $x_at < $pledge_at,
+        'frontend -x check precedes pledge(stdio exec)'
+    );
+}
+
 # Documentation references
 for my $doc ( "$root/README.md", "$root/man/Xsunaba.1" ) {
     open my $dh, '<', $doc or die $!;

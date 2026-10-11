@@ -73,9 +73,11 @@ show-doas-rule:
 	@printf '%s\n' "# Xsunaba: launch sandbox sessions through the root helper." \
 	  "# doas inherits only DISPLAY and TERM by default; setenv keeps" \
 	  "# the locale/timezone variables the helper forwards to the app." \
+	  "# doas 'args' matches the whole argument list exactly, so no" \
+	  "# fixed list can cover a session; the helper validates every" \
+	  "# option itself and fails closed." \
 	  "permit nopass setenv { TZ LANG LC_ALL LC_CTYPE LC_MESSAGES } \\" \
-	  "        USER as root cmd ${LIBEXECDIR}/${HELPER} \\" \
-	  "        args --parent-display" \
+	  "        USER as root cmd ${LIBEXECDIR}/${HELPER}" \
 	  "# Replace USER with your login name, or :wheel with a group."
 
 .PHONY: uninstall

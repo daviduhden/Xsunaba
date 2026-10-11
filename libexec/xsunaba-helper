@@ -48,7 +48,7 @@ our @EXPORT_OK = qw(
   build_xephyr_argv make_session_dir path_exists exit_status
   gen_account_name build_useradd_argv build_userdel_argv
   build_groupdel_argv build_pkill_argv home_safe_to_delete
-  _passthrough
+  stale_session_tokens _passthrough
 );
 our %EXPORT_TAGS = ( all => \@EXPORT_OK );
 
@@ -507,13 +507,7 @@ sub build_unveil_entries {
 
 sub make_session_dir {
     for ( 1 .. 32 ) {
-        open my $fh, '<', '/dev/urandom' or die "open /dev/urandom: $!";
-        my $buf = '';
-        sysread( $fh, $buf, 16 ) == 16
-          or die "short read from /dev/urandom\n";
-        close $fh;
-        my ($name) = unpack( 'H*', $buf ) =~ /\A([0-9a-f]{32})\z/
-          or die "invalid random data\n";
+        my $name = _random_hex(16);
         my $path = "$RUN_DIR/$name";
         if ( mkdir $path, 0700 ) {
             chmod 0711, $path or die "chmod $path: $!";
@@ -598,18 +592,20 @@ sub run {
     # The invoking user (as reported by doas) must own the parent
     # Xauthority file. This prevents a login user from using the root
     # helper to extract records from authority files of other users.
-    if ( defined $doas_user && length $doas_user ) {
-        my ($user) = $doas_user =~ /\A([a-z_][a-z0-9_-]{0,30})\z/
-          or die_tool "invalid DOAS_USER";
-        my $pw = getpwnam($user)
-          or die_tool "DOAS_USER '$user' unknown";
-        my @st = stat $opts->{parent_xauth}
-          or die_tool "stat $opts->{parent_xauth}: $!";
-        -f _
-          or die_tool "$opts->{parent_xauth} is not a regular file";
-        $st[4] == $pw->uid
-          or die_tool "$opts->{parent_xauth} is not owned by '$user'";
-    }
+    # doas(1) always sets DOAS_USER; require it so the ownership check
+    # cannot be skipped by invoking the helper outside doas.
+    defined $doas_user && length $doas_user
+      or die_tool "DOAS_USER not set; run the helper through doas(1)";
+    my ($user) = $doas_user =~ /\A([A-Za-z0-9._][A-Za-z0-9._-]{0,30})\z/
+      or die_tool "invalid DOAS_USER";
+    my $pw = getpwnam($user)
+      or die_tool "DOAS_USER '$user' unknown";
+    my @st = stat $opts->{parent_xauth}
+      or die_tool "stat $opts->{parent_xauth}: $!";
+    -f _
+      or die_tool "$opts->{parent_xauth} is not a regular file";
+    $st[4] == $pw->uid
+      or die_tool "$opts->{parent_xauth} is not owned by '$user'";
 
     my $xephyr = getpwnam($XEPHYR_USER)
       or die_tool "user $XEPHYR_USER missing; run 'doas make install-users'";
@@ -783,6 +779,14 @@ sub run {
     defined $xephyr_pid or $fatal->("fork: $!");
     if ( $xephyr_pid == 0 ) {
         delete $SIG{$_} for keys %SIG;
+
+        # Do not keep the parent's lock descriptors: flock(2) locks are
+        # shared across fork(2), so an exec'd child holding them would
+        # keep display.lock (and, in amnesiac mode, active.lock) locked
+        # for the whole session, defeating the intended lock lifetime.
+        close $lock;
+        close $am->{lock_fh} if $am->{lock_fh};
+
         chdir $xephyr_dir
           or _err("chdir $xephyr_dir: $!"), _exit(1);
         %ENV = %{
@@ -823,6 +827,11 @@ sub run {
     defined $app_pid or $fatal->("fork: $!");
     if ( $app_pid == 0 ) {
         delete $SIG{$_} for keys %SIG;
+
+        # The display lock is already closed above; drop the amnesiac
+        # liveness lock as well so it tracks the helper, not the app.
+        close $am->{lock_fh} if $am->{lock_fh};
+
         chdir $app_home
           or _err("chdir $app_home: $!"), _exit(1);
         %ENV = %{
@@ -1053,9 +1062,13 @@ sub _amnesiac_teardown {
         _run_cmd( build_pkill_argv( 'TERM', $am->{uid} ) );
         select undef, undef, undef, 0.1;
         _run_cmd( build_pkill_argv( 'KILL', $am->{uid} ) );
+
+        # pkill exits 1 only when no process matched. Treat anything
+        # else (0 = matched, or a fork/exec error) as "may still run" so
+        # the account is never deleted while a process could use its UID.
         my $alive = _run_cmd( build_pkill_argv( '0', $am->{uid} ) );
-        if ( $alive == 0 ) {
-            logw "processes still run as $am->{user}; "
+        if ( $alive != 1 ) {
+            logw "processes may still run as $am->{user}; "
               . "account not removed to avoid UID reuse";
             $procs_gone = 0;
         }
@@ -1099,13 +1112,21 @@ sub _amnesiac_teardown {
 # account file must name the account, and the account name pattern,
 # home path and home ownership must all verify.
 #
+
+# Return the untainted session tokens among the given directory entry
+# names. The capture is deliberate: readdir() results are tainted under
+# -T and would be rejected when turned into paths or exec arguments.
+sub stale_session_tokens {
+    return map { /\A([0-9a-f]{32})\z/ ? $1 : () } @_;
+}
+
 sub reap_stale_sessions {
     sysopen( my $glock, "$RUN_DIR/reaper.lock", O_CREAT | O_RDWR, 0600 )
       or die "open $RUN_DIR/reaper.lock: $!";
     flock( $glock, LOCK_EX ) or die "flock reaper: $!";
 
     opendir( my $dh, $RUN_DIR ) or die "opendir $RUN_DIR: $!";
-    my @tokens = grep { /\A[0-9a-f]{32}\z/ } readdir $dh;
+    my @tokens = stale_session_tokens( readdir $dh );
     closedir $dh;
 
     for my $token (@tokens) {
@@ -1119,46 +1140,63 @@ sub reap_stale_sessions {
         my $user;
         if ( open my $af, '<', "$dir/account" ) {
             local $/;
-            $user = <$af>;
+            my $name = <$af>;
             close $af;
-            chomp $user if defined $user;
+            if ( defined $name ) {
+                chomp $name;
+                # Capture to clear taint: the name is used as a path
+                # component and as a command argument, and this code runs
+                # under -T (open/exec reject tainted strings).
+                $user = $1
+                  if $name =~ /\A(\Q$EPHEMERAL_PREFIX\E[0-9a-f]{16})\z/;
+            }
         }
-        my $pw;
-        if ( defined $user
-            && $user =~ /\A\Q$EPHEMERAL_PREFIX\E[0-9a-f]{16}\z/ )
-        {
-            $pw = getpwnam($user);
-        }
+        my $pw = defined $user ? getpwnam($user) : undef;
+        my $reaped = 1;
         if ($pw) {
             my ( $uid, $gid ) = ( $pw->uid, $pw->gid );
             _run_cmd( build_pkill_argv( 'TERM', $uid ) );
             select undef, undef, undef, 0.1;
             _run_cmd( build_pkill_argv( 'KILL', $uid ) );
+
+            # pkill exits 1 only when no process matched; reuse nothing
+            # unless that is certain (see _amnesiac_teardown).
             my $alive = _run_cmd( build_pkill_argv( '0', $uid ) );
-            if ( $alive != 0 ) {
+            if ( $alive == 1 ) {
                 my $home = ephemeral_home_for($user);
                 if ( $pw->dir eq $home
                     && home_safe_to_delete( $home, $user, $uid ) )
                 {
                     remove_tree( $home, { safe => 1 } );
                 }
-                _run_cmd( build_userdel_argv($user) ) == 0
-                  or logw "userdel $user failed; stale account left";
-                my $grp = getgrnam($user);
-                if (   $grp
-                    && $grp->gid == $gid
-                    && !@{ $grp->members // [] } )
-                {
-                    _run_cmd( build_groupdel_argv($user) );
+                if ( _run_cmd( build_userdel_argv($user) ) == 0 ) {
+                    my $grp = getgrnam($user);
+                    if (   $grp
+                        && $grp->gid == $gid
+                        && !@{ $grp->members // [] } )
+                    {
+                        _run_cmd( build_groupdel_argv($user) );
+                    }
+                }
+                else {
+                    logw "userdel $user failed; session left for a retry";
+                    $reaped = 0;
                 }
             }
             else {
-                logw "processes still run as $user; account not removed";
+                # Keep the session directory (its active.lock is free
+                # again) so a later invocation can finish the cleanup
+                # once the remaining processes are gone.
+                $reaped = 0;
+                logw "processes may still run as $user; session left"
+                  . " for a later reap";
             }
         }
-        remove_tree( $dir, { safe => 1 } );
-        logw "reaped stale amnesiac session"
-          . ( defined $user ? " $user" : '' );
+        if ($reaped) {
+            remove_tree( $dir, { safe => 1 } );
+            logw "reaped stale amnesiac session"
+              . ( defined $user ? " $user" : '' );
+        }
         close $lfh;
     }
     close $glock;
@@ -1226,17 +1264,7 @@ sub _stop_child {
 sub _stop_xephyr {
     my ( $pid, $socket, $uid ) = @_;
     return unless $pid;
-    kill 'TERM', $pid;
-    for ( 1 .. 20 ) {
-        my $reaped = waitpid( $pid, WNOHANG );
-        last if $reaped == $pid || $reaped < 0;
-        select undef, undef, undef, 0.1;
-    }
-    if ( waitpid( $pid, WNOHANG ) == 0 ) {
-        kill 'KILL', $pid;
-        waitpid( $pid, 0 );
-    }
-    logi "stopped Xephyr (PID $pid)";
+    _stop_child( $pid, 'Xephyr' );
     if ( lstat $socket && -S _ && ( stat _ )[4] == $uid ) {
         unlink $socket or logw "cannot remove $socket: $!";
     }

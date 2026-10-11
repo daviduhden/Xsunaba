@@ -74,23 +74,28 @@ sub unveil_lock {
     return 1;
 }
 
-sub sandbox {
-    my %opts        = @_;
-    my $sandbox_app = $opts{app} or die "No application specified";
-
-    if (
-        (
-               exists $opts{pledge}
-            && defined $opts{pledge}
-            && $opts{pledge} ne ''
-        )
-        || ( exists $ENV{XSUNABA_PLEDGE}
-            && $ENV{XSUNABA_PLEDGE} ne '' )
-      )
+#
+# XSUNABA_PLEDGE is a legacy knob that cannot work: OpenBSD::Pledge has
+# no binding for pledge(2)'s execpromises argument, so a promise would
+# not restrict the exec'd program and would silently do nothing. Reject
+# a non-empty value from either the options or the environment.
+#
+sub _reject_pledge {
+    my ($opts) = @_;
+    my $opt_pledge = exists $opts->{pledge} ? $opts->{pledge} : undef;
+    if (   ( defined $opt_pledge && $opt_pledge ne '' )
+        || ( exists $ENV{XSUNABA_PLEDGE} && $ENV{XSUNABA_PLEDGE} ne '' ) )
     {
         die "XSUNABA_PLEDGE cannot restrict an exec'd program; "
           . "OpenBSD::Pledge does not expose execpromises";
     }
+}
+
+sub sandbox {
+    my %opts        = @_;
+    my $sandbox_app = $opts{app} or die "No application specified";
+
+    _reject_pledge( \%opts );
 
     if ( $^O eq 'openbsd' ) {
         require OpenBSD::Unveil;
@@ -151,24 +156,34 @@ sub _valid_number {
     return $value;
 }
 
+#
+# Resolve a bare command name through PATH to the absolute program path
+# the helper requires. Names containing a slash (including absolute
+# paths) are returned unchanged. Only absolute PATH entries are
+# considered, and the candidate must be an executable regular file.
+# Returns undef when the command cannot be resolved.
+#
+sub resolve_app {
+    my ( $app, $path ) = @_;
+    return $app if $app =~ m{/};
+    $path //= $ENV{PATH};
+    return undef unless defined $path && length $path;
+    for my $dir ( split /:/, $path ) {
+        next unless $dir =~ m{\A/};
+        my $candidate = "$dir/$app";
+        return $candidate if -f $candidate && -x _;
+    }
+    return undef;
+}
+
 sub launch {
     my %opts = @_;
 
-    if (
-        (
-               exists $opts{pledge}
-            && defined $opts{pledge}
-            && $opts{pledge} ne ''
-        )
-        || ( exists $ENV{XSUNABA_PLEDGE}
-            && $ENV{XSUNABA_PLEDGE} ne '' )
-      )
-    {
-        die "XSUNABA_PLEDGE cannot restrict an exec'd program; "
-          . "OpenBSD::Pledge does not expose execpromises";
-    }
+    _reject_pledge( \%opts );
 
-    my $app      = $opts{app} or die "No application specified";
+    my $app = $opts{app} or die "No application specified";
+    $app = resolve_app($app)
+      // die "Cannot find executable '$opts{app}' in PATH";
     my @app_args = @{ $opts{args} // [] };
 
     my $display = $opts{display} // $ENV{XSUNABA_DISPLAY} // ':32';
@@ -219,6 +234,14 @@ sub launch {
         app_argv       => [ $app, @app_args ],
     );
 
+    # Check executability first so a missing doas fails with our own
+    # message instead of Perl's "Can't exec" warning. $! is set by -x.
+    # This must run before pledge(): -x uses stat(2) (the "rpath"
+    # promise), which is not covered by "stdio exec", and a pledge
+    # violation aborts the process.
+    -x $DOAS_BIN
+      or die "exec $DOAS_BIN: $!";
+
     # After this point the process only needs to execute the helper;
     # fail closed if the frontend itself cannot be restricted.
     if ( $^O eq 'openbsd' ) {
@@ -231,10 +254,6 @@ sub launch {
           or die "pledge: $!";
     }
 
-    # Check executability first so a missing doas fails with our own
-    # message instead of Perl's "Can't exec" warning. $! is set by -x.
-    -x $DOAS_BIN
-      or die "exec $DOAS_BIN: $!";
     exec $DOAS_BIN, $HELPER, @argv;
     die "exec $DOAS_BIN: $!";
 }

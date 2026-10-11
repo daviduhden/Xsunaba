@@ -24,12 +24,17 @@ like(
 );
 like(
     $rule,
-    qr/^\s*args --parent-display$/m,
-    'printed rule contains the args restriction'
+    qr/^\s*USER as root cmd \/usr\/local\/libexec\/xsunaba-helper$/m,
+    'printed rule restricts cmd to the helper'
+);
+unlike(
+    $rule,
+    qr/^\s*args\b/m,
+    'no fixed args restriction (doas matches the whole list exactly)'
 );
 unlike( $rule, qr/\\n/, 'no literal backslash-n leaked into the rule' );
 my @continuations = ( $rule =~ /\\$/mg );
-ok( @continuations >= 2, 'rule uses real backslash-newline continuations' );
+ok( @continuations >= 1, 'rule uses real backslash-newline continuations' );
 
 my $help = `make -C "$root" -s help 2>&1`;
 is( $? >> 8, 0, 'make help exits 0' );
