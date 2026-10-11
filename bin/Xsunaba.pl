@@ -167,13 +167,13 @@ sub resolve_app {
     my ( $app, $path ) = @_;
     return $app if $app =~ m{/};
     $path //= $ENV{PATH};
-    return undef unless defined $path && length $path;
+    return unless defined $path && length $path;
     for my $dir ( split /:/, $path ) {
         next unless $dir =~ m{\A/};
         my $candidate = "$dir/$app";
         return $candidate if -f $candidate && -x _;
     }
-    return undef;
+    return;
 }
 
 sub launch {

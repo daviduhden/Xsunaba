@@ -31,6 +31,7 @@ use File::Path qw(remove_tree);
 use POSIX      qw(_exit WNOHANG getegid geteuid getgid getgroups
   getuid setgid setuid);
 use Sys::Hostname qw(hostname);
+use Time::HiRes   ();
 use User::grent;
 use User::pwent;
 
@@ -66,7 +67,7 @@ our $APP_GROUP    = '_xsunaba';
 our $APP_PATH     = '/usr/local/bin:/usr/X11R6/bin:/usr/bin:/bin';
 our $MINIMAL_PATH = '/usr/X11R6/bin:/usr/bin:/bin';
 our $MAX_DISPLAY  = 999;
-our $SOCKET_MODE  = 0660;
+our $SOCKET_MODE  = oct(660);    # 0660: owner and group read+write
 our $MAX_AUTH_LEN = 4096;
 our $MAX_XAUTH    = 1048576;                                         # 1 MiB
 our $COOKIE_LEN   = 16;
@@ -227,7 +228,7 @@ sub find_free_display {
     for my $n ( $start .. $MAX_DISPLAY ) {
         return $n unless $exists->($n);
     }
-    return undef;
+    return;
 }
 
 #
@@ -674,13 +675,13 @@ sub run {
         _err $msg;
         if ($xephyr_pid) {
             kill 'TERM', $xephyr_pid;
-            select undef, undef, undef, 0.1;
+            Time::HiRes::sleep(0.1);
             kill 'KILL', $xephyr_pid;
             waitpid( $xephyr_pid, 0 );
         }
         if ($app_pid) {
             kill 'TERM', $app_pid;
-            select undef, undef, undef, 0.1;
+            Time::HiRes::sleep(0.1);
             kill 'KILL', $app_pid;
             waitpid( $app_pid, 0 );
         }
@@ -925,10 +926,10 @@ sub _ensure_run_dir {
         return;
     }
     die "mkdir $RUN_DIR: $!" unless $!{EEXIST};
-    my @st = lstat $RUN_DIR or die "lstat $RUN_DIR: $!";
-    -d _                    or die "$RUN_DIR exists and is not a directory\n";
-    $st[4] == 0             or die "$RUN_DIR is not owned by root\n";
-    ( $st[2] & 022 ) == 0   or die "$RUN_DIR is group or world writable\n";
+    my @st = lstat $RUN_DIR   or die "lstat $RUN_DIR: $!";
+    -d _                      or die "$RUN_DIR exists and is not a directory\n";
+    $st[4] == 0               or die "$RUN_DIR is not owned by root\n";
+    ( $st[2] & oct(22) ) == 0 or die "$RUN_DIR is group or world writable\n";
     chmod 0711, $RUN_DIR or die "chmod $RUN_DIR: $!";
 }
 
@@ -973,10 +974,10 @@ sub _ensure_ephemeral_bases {
             next;
         }
         die "mkdir $dir: $!" unless $!{EEXIST};
-        my @st = lstat $dir   or die "lstat $dir: $!";
-        -d _                  or die "$dir exists and is not a directory\n";
-        $st[4] == 0           or die "$dir is not owned by root\n";
-        ( $st[2] & 022 ) == 0 or die "$dir is group or world writable\n";
+        my @st = lstat $dir       or die "lstat $dir: $!";
+        -d _                      or die "$dir exists and is not a directory\n";
+        $st[4] == 0               or die "$dir is not owned by root\n";
+        ( $st[2] & oct(22) ) == 0 or die "$dir is group or world writable\n";
         chmod 0711, $dir or die "chmod $dir: $!";
     }
 }
@@ -1060,7 +1061,7 @@ sub _amnesiac_teardown {
     my $procs_gone = 1;
     if ( $am->{uid} ) {
         _run_cmd( build_pkill_argv( 'TERM', $am->{uid} ) );
-        select undef, undef, undef, 0.1;
+        Time::HiRes::sleep(0.1);
         _run_cmd( build_pkill_argv( 'KILL', $am->{uid} ) );
 
         # pkill exits 1 only when no process matched. Treat anything
@@ -1151,12 +1152,12 @@ sub reap_stale_sessions {
                   if $name =~ /\A(\Q$EPHEMERAL_PREFIX\E[0-9a-f]{16})\z/;
             }
         }
-        my $pw = defined $user ? getpwnam($user) : undef;
+        my $pw     = defined $user ? getpwnam($user) : undef;
         my $reaped = 1;
         if ($pw) {
             my ( $uid, $gid ) = ( $pw->uid, $pw->gid );
             _run_cmd( build_pkill_argv( 'TERM', $uid ) );
-            select undef, undef, undef, 0.1;
+            Time::HiRes::sleep(0.1);
             _run_cmd( build_pkill_argv( 'KILL', $uid ) );
 
             # pkill exits 1 only when no process matched; reuse nothing
@@ -1236,11 +1237,11 @@ sub _wait_for_socket {
               unless ( $st[2] & S_IFMT ) == S_IFSOCK
               && $st[4] == $uid
               && $st[5] == $gid
-              && ( $st[2] & 0777 ) == $SOCKET_MODE;
+              && ( $st[2] & oct(777) ) == $SOCKET_MODE;
             return;
         }
         $fatal->("lstat $socket: $!") unless $!{ENOENT};
-        select undef, undef, undef, 0.05;
+        Time::HiRes::sleep(0.05);
     }
     $fatal->("timed out waiting for Xephyr to open $socket");
 }
@@ -1252,7 +1253,7 @@ sub _stop_child {
     for ( 1 .. 20 ) {
         my $reaped = waitpid( $pid, WNOHANG );
         last if $reaped == $pid || $reaped < 0;
-        select undef, undef, undef, 0.1;
+        Time::HiRes::sleep(0.1);
     }
     if ( waitpid( $pid, WNOHANG ) == 0 ) {
         kill 'KILL', $pid;
