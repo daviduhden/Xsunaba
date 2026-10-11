@@ -194,8 +194,8 @@ sub launch {
 
     my ($display_n) = $display =~ /\A:([0-9]{1,3})\z/
       or die "Invalid display '$display' (expected :number)";
-    $display_n >= 1 && $display_n <= $MAX_DISPLAY
-      or die "Display must be in 1..$MAX_DISPLAY";
+    die "Display must be in 1..$MAX_DISPLAY"
+      if $display_n < 1 || $display_n > $MAX_DISPLAY;
     _valid_number( 'width',  $width,  32767 );
     _valid_number( 'height', $height, 32767 );
 
