@@ -9,8 +9,10 @@ use Exporter qw(import);
 our @EXPORT_OK   = qw(pledge unveil unveil_lock sandbox launch);
 our %EXPORT_TAGS = ( all => \@EXPORT_OK );
 
+# Low-level use only: a pledged caller must not execute another program
+# with the current kernel ABI. The frontend does not call this wrapper.
 our $PLEDGE_PROMISES =
-  'stdio rpath wpath cpath fattr proc exec' . ' inet dns unix tty';
+  'stdio rpath wpath cpath fattr proc' . ' inet dns unix tty';
 
 # Locations of the privileged session helper and doas. Overridable
 # only by code embedding this module (for example tests), never
@@ -236,23 +238,11 @@ sub launch {
 
     # Check executability first so a missing doas fails with our own
     # message instead of Perl's "Can't exec" warning. $! is set by -x.
-    # This must run before pledge(): -x uses stat(2) (the "rpath"
-    # promise), which is not covered by "stdio exec", and a pledge
-    # violation aborts the process.
     -x $DOAS_BIN
       or die "exec $DOAS_BIN: $!";
 
-    # After this point the process only needs to execute the helper;
-    # fail closed if the frontend itself cannot be restricted.
-    if ( $^O eq 'openbsd' ) {
-        require OpenBSD::Pledge;
-
-        # OpenBSD::Pledge::pledge takes a list of promises and adds
-        # "stdio" itself; passing one space-joined string is not the
-        # documented interface.
-        OpenBSD::Pledge::pledge(qw(stdio exec))
-          or die "pledge: $!";
-    }
+    # Remain unpledged: the frontend must execute doas, which performs
+    # its own privilege checks before invoking the root-owned helper.
 
     exec $DOAS_BIN, $HELPER, @argv;
     die "exec $DOAS_BIN: $!";

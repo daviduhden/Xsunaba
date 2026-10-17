@@ -877,15 +877,13 @@ sub run {
     }
     logi "launched '$opts->{app}' (PID $app_pid)";
 
-    # The helper no longer needs to fork, execute or write files other
-    # than during teardown. exec/getpw cover the account-management
-    # commands (userdel/groupdel/pkill) and passwd-database lookups
-    # used by amnesiac cleanup. Fail closed: a failed pledge tears the
-    # session down. pledge() takes a list of promises (it adds stdio
-    # itself), not one space-separated string.
-    my @promises = qw(stdio rpath cpath fattr proc exec getpw);
-    unless ( OpenBSD::Pledge::pledge(@promises) ) {
-        $fatal->("pledge failed: $!");
+    # Only amnesiac teardown executes account-management helpers.
+    # Persistent-account mode can retain a syscall ceiling after both
+    # application children have been created.
+    unless ( $opts->{amnesiac} ) {
+        unless ( OpenBSD::Pledge::pledge(qw(stdio rpath cpath fattr proc getpw)) ) {
+            $fatal->("pledge failed: $!");
+        }
     }
 
     # --- Wait for the application ---
