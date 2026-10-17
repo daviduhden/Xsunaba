@@ -12,9 +12,10 @@ The security boundary is **Unix account separation plus X11
 authentication plus socket permissions**. Xephyr and the application
 run under dedicated local users that are distinct from your login
 user. Neither account can read your credentials, and your login user
-cannot read the nested display's credentials. `unveil(2)` and
-`pledge(2)` are applied on top as defense in depth, not as the
-boundary itself.
+cannot read the nested display's credentials. Optional `unveil(2)` rules
+restrict pre-exec setup only; they are cleared by execve without
+execpromises. The frontend stays unpledged; the supervisor can pledge
+after launching its children in persistent-account mode.
 
 ```
 login user (you)
@@ -460,8 +461,14 @@ helper controls the entire session:
    processes, removes the verified ephemeral home, and deletes the
    account and its private group.
 
-The helper then pledges itself (`stdio rpath cpath fattr proc exec
-getpw`) for the teardown phase; the frontend pledges `stdio exec`.
+The frontend stays unpledged to execute doas. The supervisor pledges
+`stdio rpath cpath fattr proc getpw` after launching its children in
+persistent-account mode. Amnesiac mode stays unpledged because cleanup
+executes account-management helpers.
+The optional application unveil rules constrain pre-exec setup only; without
+execpromises the kernel clears them on execve. They are not an application
+containment boundary. Separate accounts, X11 authentication, socket
+permissions and verified privilege drops provide the isolation.
 The helper drops privileges with verified `setgid`/`setuid` sequences
 and checks that privileges cannot be regained. Children never inherit
 privileged state, supplementary groups are reset, and every
@@ -507,7 +514,9 @@ provide.
 `Xsunaba` can be loaded as a Perl module. The low-level
 `pledge`/`unveil` helpers restrict the **current** process only, and
 `launch()` is the frontend used by the command-line tool (it requires
-the helper and the doas rule to be installed).
+the helper and the doas rule to be installed). Calling the low-level
+`pledge()` before `launch()` prevents execution on the current kernel; the
+frontend deliberately does not do this.
 
 ```perl
 #!/usr/bin/perl

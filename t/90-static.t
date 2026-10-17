@@ -87,18 +87,17 @@ like( $src, qr/stale_session_tokens\( readdir /,
 like( $src, qr/close \$lock;/, 'display lock closed in the child' );
 like( $src, qr/close \$am->\{lock_fh\}/, 'liveness lock closed in children' );
 
-# The frontend must not stat()/access() after pledging stdio+exec: -x
-# uses the rpath promise, and a pledge violation aborts the process.
+# Check executability before invoking doas; the launcher must stay unpledged
+# because it needs to execute the privilege boundary itself.
 {
     open my $ffh, '<', $front or die $!;
     my $fsrc = do { local $/; <$ffh> };
     close $ffh;
-    my $pledge_at = index( $fsrc, 'OpenBSD::Pledge::pledge(qw(stdio exec))' );
-    my $x_at      = index( $fsrc, '-x $DOAS_BIN' );
-    ok(
-        $pledge_at >= 0 && $x_at >= 0 && $x_at < $pledge_at,
-        'frontend -x check precedes pledge(stdio exec)'
-    );
+    my $exec_at = index( $fsrc, 'exec $DOAS_BIN, $HELPER, @argv' );
+    my $x_at = index( $fsrc, '-x $DOAS_BIN' );
+    ok( $x_at >= 0 && $exec_at > $x_at, 'frontend checks doas before execution' );
+    unlike( $fsrc, qr/OpenBSD::Pledge::pledge\(qw\(stdio exec\)\)/,
+        'frontend does not install the removed execution promise' );
 }
 
 # Documentation references

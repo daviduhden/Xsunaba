@@ -54,10 +54,12 @@ points to the nested display,
 to its own authority file, and no parent-display credentials or host
 IPC variables are forwarded.
 .It
+Optional
 .Xr unveil 2
-and
-.Xr pledge 2
-are applied on top as defense in depth.
+rules restrict pre-exec setup only; without execpromises the kernel
+clears them on execve.
+The frontend remains unpledged; the supervisor can pledge after creating
+its children in persistent-account mode.
 .El
 .Pp
 The Xephyr outer window is a normal host-WM-resizable window.
@@ -223,11 +225,15 @@ rebuilds the application environment and optionally applies
 .It
 cleans up the socket and the session directory on exit;
 .It
-finally calls
-.Xr pledge 2
+keeps the frontend unpledged to execute doas, and pledges the supervisor
 with
-.Ql stdio rpath cpath fattr proc exec getpw
-for the teardown phase.
+.Ql stdio rpath cpath fattr proc getpw
+in persistent-account mode after creating its children.
+Amnesiac teardown stays unpledged to execute account-management helpers.
+Account separation, X11 authentication, socket permissions and verified
+privilege drops remain the isolation boundary.
+Without execpromises the kernel clears optional unveil rules on execve;
+they restrict pre-exec setup only.
 .El
 .Sh INPUT HANDLING
 Xephyr's input path is a plain pass-through: host motion, button and
