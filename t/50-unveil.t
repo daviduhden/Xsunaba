@@ -5,6 +5,8 @@ use warnings;
 use Test::More;
 use FindBin;
 
+## no critic (Modules::RequireBarewordIncludes)
+# The helper is a script, not a module; it must be loaded by path.
 require "$FindBin::Bin/../libexec/xsunaba-helper";
 
 my $socket      = '/tmp/.X11-unix/X32';
@@ -27,7 +29,7 @@ is_deeply(
 
 # The whole socket directory must never be exposed
 ok(
-    !( grep { $_ =~ m{\A/tmp/\.X11-unix:} } @$entries ),
+    !( grep { m{\A/tmp/\.X11-unix:} } @$entries ),
     'socket directory itself is not unveiled'
 );
 ok( !( grep { $_ eq '/tmp/.X11-unix' } @$entries ),
@@ -42,7 +44,7 @@ my $parent_auth = '/var/run/xsunaba/deadbeef/xephyr/parent-auth';
 my $server_auth = '/var/run/xsunaba/deadbeef/xephyr/server-auth';
 for my $secret ( $parent_auth, $server_auth ) {
     ok(
-        !( grep { $_ =~ /\A\Q$secret\E:/ } @$entries ),
+        !( grep { /\A\Q$secret\E:/ } @$entries ),
         "Xephyr authority file not unveiled: $secret"
     );
 }

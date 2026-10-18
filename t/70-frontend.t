@@ -3,12 +3,21 @@
 use strict;
 use warnings;
 use Test::More;
-no warnings qw(once);
 use File::Temp qw(tempdir);
 use File::Path qw(remove_tree);
 use FindBin;
 
+## no critic (Modules::RequireBarewordIncludes)
+# The frontend is a script, not a module; it must be loaded by path.
 require "$FindBin::Bin/../bin/Xsunaba.pl";
+
+sub write_file {
+    my ( $path, $content ) = @_;
+    open my $fh, '>', $path or die $!;
+    print {$fh} $content or die $!;
+    close $fh or die $!;
+    return;
+}
 
 # --- Command resolution --------------------------------------------
 # The helper requires an absolute program path, but the CLI accepts a
@@ -17,15 +26,15 @@ require "$FindBin::Bin/../bin/Xsunaba.pl";
     my $dir = tempdir( CLEANUP => 1 );
     my $exe = "$dir/mytool";
     open my $fh, '>', $exe or die $!;
-    close $fh;
+    close $fh or die $!;
     chmod 0755, $exe or die $!;
 
-    is( Xsunaba::resolve_app( 'mytool', $dir ), $exe,
-        'bare name resolved through the given PATH' );
-    is( Xsunaba::resolve_app( '/usr/bin/xterm' ), '/usr/bin/xterm',
-        'absolute path left unchanged' );
-    is( Xsunaba::resolve_app( './local', $dir ), './local',
-        'name containing a slash left unchanged' );
+    is( Xsunaba::resolve_app( 'mytool', $dir ),
+        $exe, 'bare name resolved through the given PATH' );
+    is( Xsunaba::resolve_app('/usr/bin/xterm'),
+        '/usr/bin/xterm', 'absolute path left unchanged' );
+    is( Xsunaba::resolve_app( './local', $dir ),
+        './local', 'name containing a slash left unchanged' );
     ok( !defined Xsunaba::resolve_app( 'no-such-tool-xyz', $dir ),
         'unknown command is undefined' );
     ok( !defined Xsunaba::resolve_app( 'mytool', 'bin' ),
@@ -96,51 +105,51 @@ is_deeply(
 # must not delete it on their own exit.
 my $dir   = tempdir( CLEANUP => 0 );
 my $xauth = "$dir/xauth";
-open my $fh, '>', $xauth or die $!;
-print {$fh} "placeholder";
-close $fh;
+write_file( $xauth, 'placeholder' );
 
 my %base_env = %ENV;
 
-{
-    local %ENV = %base_env;
-    delete @ENV{
-        qw(DISPLAY XAUTHORITY XSUNABA_PLEDGE
-          XSUNABA_UNVEIL XSUNABA_DISPLAY WIDTH HEIGHT VERBOSE
-          XSUNABA_VERBOSE)
+# Build a deterministic environment for each launch case. Variables the
+# frontend must never inherit are removed unless the case sets them.
+sub test_env {
+    my (@overrides) = @_;
+    my %env = %base_env;
+    delete @env{
+        qw(DISPLAY XAUTHORITY HOME XSUNABA_PLEDGE XSUNABA_UNVEIL
+          XSUNABA_DISPLAY WIDTH HEIGHT VERBOSE XSUNABA_VERBOSE)
     };
-    $ENV{HOME} = $dir;
-    eval { Xsunaba::launch( app => '/bin/true' ) };
+    while (@overrides) {
+        my ( $key, $value ) = splice @overrides, 0, 2;
+        $env{$key} = $value if defined $value;
+    }
+    return %env;
+}
+
+{
+    local %ENV = test_env( HOME => $dir );
+    my $ok = eval { Xsunaba::launch( app => '/bin/true' ); 1 };
+    ok( !$ok, 'launch fails without DISPLAY' );
     like( $@, qr/DISPLAY not set/ms, 'no DISPLAY is rejected' );
 }
 
 {
-    local %ENV = %base_env;
-    delete @ENV{
-        qw(DISPLAY XAUTHORITY HOME XSUNABA_PLEDGE
-          XSUNABA_UNVEIL XSUNABA_DISPLAY WIDTH HEIGHT VERBOSE
-          XSUNABA_VERBOSE)
-    };
-    eval { Xsunaba::launch( app => '/bin/true' ) };
+    local %ENV = test_env();
+    my $ok = eval { Xsunaba::launch( app => '/bin/true' ); 1 };
+    ok( !$ok, 'launch fails without HOME' );
     like( $@, qr/HOME not set/ms, 'no HOME is rejected' );
 }
 
 {
-    local %ENV = %base_env;
-    delete @ENV{
-        qw(XSUNABA_PLEDGE XSUNABA_UNVEIL XSUNABA_DISPLAY
-          WIDTH HEIGHT VERBOSE XSUNABA_VERBOSE)
-    };
-    $ENV{HOME}       = $dir;
-    $ENV{DISPLAY}    = ':0';
-    $ENV{XAUTHORITY} = $xauth;
+    local %ENV = test_env(
+        HOME       => $dir,
+        DISPLAY    => ':0',
+        XAUTHORITY => $xauth,
+    );
 
     my $fake = "$dir/fake-doas";
     my $out  = "$dir/doas-argv";
-    open my $s, '>', $fake or die $!;
-    my $perl = $^X;
-    print {$s} "#!$perl\n";
-    print {$s} <<'FAKE';
+    my $perl     = $^X;
+    my $fake_src = "#!$perl\n" . <<'FAKE';
 #!/usr/bin/perl
 use strict;
 use warnings;
@@ -148,15 +157,14 @@ open my $fh, '>', $ENV{FAKE_DOAS_OUT} or die $!;
 print {$fh} join("\0", @ARGV), "\0";
 close $fh;
 FAKE
-    close $s;
+    write_file( $fake, $fake_src );
     chmod 0755, $fake or die $!;
     local $Xsunaba::DOAS_BIN = $fake;
 
     my $pid = fork();
     die "fork: $!" unless defined $pid;
     if ( $pid == 0 ) {
-        $ENV{FAKE_DOAS_OUT} = $out;
-        $ENV{VERBOSE}       = 1;
+        local %ENV = ( %ENV, FAKE_DOAS_OUT => $out, VERBOSE => 1 );
         Xsunaba::launch(
             app     => '/usr/bin/xterm',
             args    => [ '-e', 'true' ],
@@ -170,8 +178,8 @@ FAKE
     waitpid( $pid, 0 );
     is( $? >> 8, 0, 'launch execs the helper cleanly' );
     open my $rf, '<', $out or die $!;
-    my $raw = do { local $/; <$rf> };
-    close $rf;
+    my $raw = do { local $/ = undef; <$rf> };
+    close $rf or die $!;
     my @got = split /\0/, $raw, -1;
     pop @got;    # trailing empty
     is_deeply(
@@ -194,29 +202,23 @@ FAKE
 # A bare command name must be resolved through PATH before reaching the
 # helper, which requires an absolute application path.
 {
-    local %ENV = %base_env;
-    delete @ENV{
-        qw(XSUNABA_PLEDGE XSUNABA_UNVEIL XSUNABA_DISPLAY
-          WIDTH HEIGHT VERBOSE XSUNABA_VERBOSE)
-    };
     my $bin = "$dir/bin";
     mkdir $bin or die $!;
     my $tool = "$bin/mytool";
-    open my $tf, '>', $tool or die $!;
-    close $tf;
+    write_file( $tool, '' );
     chmod 0755, $tool or die $!;
 
-    $ENV{HOME}       = $dir;
-    $ENV{DISPLAY}    = ':0';
-    $ENV{XAUTHORITY} = $xauth;
-    $ENV{PATH}       = $bin;
+    local %ENV = test_env(
+        HOME       => $dir,
+        DISPLAY    => ':0',
+        XAUTHORITY => $xauth,
+        PATH       => $bin,
+    );
 
     my $fake = "$dir/fake-doas-resolve";
     my $out  = "$dir/doas-argv-resolve";
-    open my $s, '>', $fake or die $!;
-    my $perl = $^X;
-    print {$s} "#!$perl\n";
-    print {$s} <<'FAKE';
+    my $perl     = $^X;
+    my $fake_src = "#!$perl\n" . <<'FAKE';
 #!/usr/bin/perl
 use strict;
 use warnings;
@@ -224,22 +226,22 @@ open my $fh, '>', $ENV{FAKE_DOAS_OUT} or die $!;
 print {$fh} join("\0", @ARGV), "\0";
 close $fh;
 FAKE
-    close $s;
+    write_file( $fake, $fake_src );
     chmod 0755, $fake or die $!;
     local $Xsunaba::DOAS_BIN = $fake;
 
     my $pid = fork();
     die "fork: $!" unless defined $pid;
     if ( $pid == 0 ) {
-        $ENV{FAKE_DOAS_OUT} = $out;
+        local %ENV = ( %ENV, FAKE_DOAS_OUT => $out );
         Xsunaba::launch( app => 'mytool', args => ['--flag'] );
         exit 0;
     }
     waitpid( $pid, 0 );
     is( $? >> 8, 0, 'bare command launch execs the helper cleanly' );
     open my $rf, '<', $out or die $!;
-    my $raw = do { local $/; <$rf> };
-    close $rf;
+    my $raw = do { local $/ = undef; <$rf> };
+    close $rf or die $!;
     my @got = split /\0/, $raw, -1;
     pop @got;
     is_deeply(
@@ -258,71 +260,84 @@ FAKE
 }
 
 {
-    local %ENV = %base_env;
-    $ENV{HOME}           = $dir;
-    $ENV{DISPLAY}        = ':0';
-    $ENV{XAUTHORITY}     = $xauth;
-    $ENV{XSUNABA_PLEDGE} = 'stdio';
-    eval { Xsunaba::launch( app => '/bin/true' ) };
+    local %ENV = test_env(
+        HOME           => $dir,
+        DISPLAY        => ':0',
+        XAUTHORITY     => $xauth,
+        XSUNABA_PLEDGE => 'stdio',
+    );
+    my $ok = eval { Xsunaba::launch( app => '/bin/true' ); 1 };
+    ok( !$ok, 'launch fails with XSUNABA_PLEDGE' );
     like( $@, qr/execpromises/, 'non-empty XSUNABA_PLEDGE rejected' );
 }
 
 {
-    local %ENV = %base_env;
-    $ENV{HOME}       = $dir;
-    $ENV{DISPLAY}    = 'hostname:0';
-    $ENV{XAUTHORITY} = $xauth;
-    eval { Xsunaba::launch( app => '/bin/true' ) };
+    local %ENV = test_env(
+        HOME       => $dir,
+        DISPLAY    => 'hostname:0',
+        XAUTHORITY => $xauth,
+    );
+    my $ok = eval { Xsunaba::launch( app => '/bin/true' ); 1 };
+    ok( !$ok, 'launch fails for a remote parent display' );
     like( $@, qr/Invalid DISPLAY/, 'remote parent display rejected' );
 }
 
 {
-    local %ENV = %base_env;
-    $ENV{HOME}       = $dir;
-    $ENV{DISPLAY}    = ':0';
-    $ENV{XAUTHORITY} = "$dir/nonexistent";
-    eval { Xsunaba::launch( app => '/bin/true' ) };
+    local %ENV = test_env(
+        HOME       => $dir,
+        DISPLAY    => ':0',
+        XAUTHORITY => "$dir/nonexistent",
+    );
+    my $ok = eval { Xsunaba::launch( app => '/bin/true' ); 1 };
+    ok( !$ok, 'launch fails without Xauthority' );
     like( $@, qr/Cannot read Xauthority/, 'missing Xauthority rejected' );
 }
 
 {
-    local %ENV = %base_env;
-    $ENV{HOME}            = $dir;
-    $ENV{DISPLAY}         = ':0';
-    $ENV{XAUTHORITY}      = $xauth;
-    $ENV{XSUNABA_DISPLAY} = ':abc';
-    eval { Xsunaba::launch( app => '/bin/true' ) };
+    local %ENV = test_env(
+        HOME            => $dir,
+        DISPLAY         => ':0',
+        XAUTHORITY      => $xauth,
+        XSUNABA_DISPLAY => ':abc',
+    );
+    my $ok = eval { Xsunaba::launch( app => '/bin/true' ); 1 };
+    ok( !$ok, 'launch fails for an invalid nested display' );
     like( $@, qr/Invalid display/, 'invalid nested display rejected' );
 }
 
 {
-    local %ENV = %base_env;
-    $ENV{HOME}       = $dir;
-    $ENV{DISPLAY}    = ':0';
-    $ENV{XAUTHORITY} = $xauth;
-    $ENV{WIDTH}      = '99999999';
-    eval { Xsunaba::launch( app => '/bin/true' ) };
+    local %ENV = test_env(
+        HOME       => $dir,
+        DISPLAY    => ':0',
+        XAUTHORITY => $xauth,
+        WIDTH      => '99999999',
+    );
+    my $ok = eval { Xsunaba::launch( app => '/bin/true' ); 1 };
+    ok( !$ok, 'launch fails for an oversized width' );
     like( $@, qr/width/, 'oversized width rejected' );
 }
 
 {
-    local %ENV = %base_env;
-    $ENV{HOME}       = $dir;
-    $ENV{DISPLAY}    = ':0';
-    $ENV{XAUTHORITY} = $xauth;
+    local %ENV = test_env(
+        HOME       => $dir,
+        DISPLAY    => ':0',
+        XAUTHORITY => $xauth,
+    );
 
     # Point at a doas that does not exist so the failure is deterministic
     # on every platform. Using the real $DOAS_BIN would exec it on
     # OpenBSD (where doas is installed) and replace the test process.
     local $Xsunaba::DOAS_BIN = "$dir/no-such-dir/doas";
-    eval {
+    my $ok = eval {
         Xsunaba::launch(
             app     => '/usr/bin/xterm',
             display => ':50',
             width   => 1000,
             height  => 800
         );
+        1;
     };
+    ok( !$ok, 'launch fails for a missing doas' );
     like(
         $@,
         qr/exec .*doas/,
@@ -332,21 +347,16 @@ FAKE
 
 # --- Amnesiac end-to-end argv and browser-geometry neutrality -------
 {
-    local %ENV = %base_env;
-    delete @ENV{
-        qw(XSUNABA_PLEDGE XSUNABA_UNVEIL XSUNABA_DISPLAY
-          WIDTH HEIGHT VERBOSE XSUNABA_VERBOSE)
-    };
-    $ENV{HOME}       = $dir;
-    $ENV{DISPLAY}    = ':0';
-    $ENV{XAUTHORITY} = $xauth;
+    local %ENV = test_env(
+        HOME       => $dir,
+        DISPLAY    => ':0',
+        XAUTHORITY => $xauth,
+    );
 
     my $fake = "$dir/fake-doas-amnesiac";
     my $out  = "$dir/doas-argv-amnesiac";
-    open my $s, '>', $fake or die $!;
-    my $perl = $^X;
-    print {$s} "#!$perl\n";
-    print {$s} <<'FAKE';
+    my $perl     = $^X;
+    my $fake_src = "#!$perl\n" . <<'FAKE';
 #!/usr/bin/perl
 use strict;
 use warnings;
@@ -354,14 +364,14 @@ open my $fh, '>', $ENV{FAKE_DOAS_OUT} or die $!;
 print {$fh} join("\0", @ARGV), "\0";
 close $fh;
 FAKE
-    close $s;
+    write_file( $fake, $fake_src );
     chmod 0755, $fake or die $!;
     local $Xsunaba::DOAS_BIN = $fake;
 
     my $pid = fork();
     die "fork: $!" unless defined $pid;
     if ( $pid == 0 ) {
-        $ENV{FAKE_DOAS_OUT} = $out;
+        local %ENV = ( %ENV, FAKE_DOAS_OUT => $out );
         Xsunaba::launch(
             amnesiac => 1,
             app      => '/usr/local/bin/firefox',
@@ -374,8 +384,8 @@ FAKE
     waitpid( $pid, 0 );
     is( $? >> 8, 0, 'amnesiac launch execs cleanly' );
     open my $rf, '<', $out or die $!;
-    my $raw = do { local $/; <$rf> };
-    close $rf;
+    my $raw = do { local $/ = undef; <$rf> };
+    close $rf or die $!;
     my @got = split /\0/, $raw, -1;
     pop @got;
     is_deeply(

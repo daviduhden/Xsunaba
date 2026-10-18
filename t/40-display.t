@@ -4,8 +4,11 @@ use strict;
 use warnings;
 use Test::More;
 use File::Temp qw(tempdir);
+use IO::Socket::UNIX qw(SOCK_STREAM);
 use FindBin;
 
+## no critic (Modules::RequireBarewordIncludes)
+# The helper is a script, not a module; it must be loaded by path.
 require "$FindBin::Bin/../libexec/xsunaba-helper";
 
 # Socket path derivation
@@ -44,8 +47,23 @@ for ( 1 .. 5 ) {
         'session path is random hex under run dir'
     );
     my @st = stat $s;
-    is( $st[2] & 0777, 0711, 'session dir mode 0711' );
+    is( $st[2] & oct(777), oct(711), 'session dir mode 0711' );
     ok( !$sessions{$s}++, 'session path unique' );
+}
+
+# Cleanup must still remove the socket when Xephyr was already reaped:
+# the pid is undef, so there is no PID to signal (and no recycled PID).
+{
+    my $sock_path = "$dir/xsock";
+    my $listener  = IO::Socket::UNIX->new(
+        Type   => SOCK_STREAM,
+        Local  => $sock_path,
+        Listen => 1,
+    ) or die $!;
+    close $listener or die $!;
+    ## no critic (Subroutines::ProtectPrivateSubs)
+    Xsunaba::Helper::_stop_xephyr( undef, $sock_path, $< );
+    ok( !-e $sock_path, 'socket removed without a live Xephyr PID' );
 }
 
 # Exit status mapping

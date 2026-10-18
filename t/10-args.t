@@ -5,6 +5,8 @@ use warnings;
 use Test::More;
 use FindBin;
 
+## no critic (Modules::RequireBarewordIncludes)
+# The helper is a script, not a module; it must be loaded by path.
 require "$FindBin::Bin/../libexec/xsunaba-helper";
 
 my $parse = \&Xsunaba::Helper::parse_args;

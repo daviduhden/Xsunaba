@@ -11,8 +11,8 @@ my $front  = "$root/bin/Xsunaba.pl";
 
 for my $f ( $helper, $front ) {
     open my $fh, '<', $f or die $!;
-    my $src = do { local $/; <$fh> };
-    close $fh;
+    my $src = do { local $/ = undef; <$fh> };
+    close $fh or die $!;
 
     unlike( $src, qr/\bsystem\s*\(/, "no system(): $f" );
     unlike( $src, qr/qx\b|`/,        "no backticks/qx: $f" );
@@ -44,8 +44,8 @@ for my $f ( $helper, $front ) {
 
 # Privilege transition is explicit and verified in the helper
 open my $fh, '<', $helper or die $!;
-my $src = do { local $/; <$fh> };
-close $fh;
+my $src = do { local $/ = undef; <$fh> };
+close $fh or die $!;
 like( $src, qr/\$\) = "\$gid \$gid"/,    'supplementary groups reset' );
 like( $src, qr/setgid\(\$gid\)/,         'setgid before setuid' );
 like( $src, qr/setuid\(\$uid\)/,         'setuid to target account' );
@@ -78,33 +78,43 @@ like(
     qr/sub stale_session_tokens/,
     'reaper session-name filter is a capture-based helper'
 );
-like( $src, qr/stale_session_tokens\( readdir /,
-    'reaper filters session names through stale_session_tokens' );
+like(
+    $src,
+    qr/stale_session_tokens\( readdir /,
+    'reaper filters session names through stale_session_tokens'
+);
 
 # flock(2) locks are shared across fork(2); the exec'd children must
 # close the helper's lock descriptors or they keep the locks for the
 # whole session.
-like( $src, qr/close \$lock;/, 'display lock closed in the child' );
+like( $src, qr/close \$lock\b/,          'display lock closed in the child' );
 like( $src, qr/close \$am->\{lock_fh\}/, 'liveness lock closed in children' );
 
 # Check executability before invoking doas; the launcher must stay unpledged
 # because it needs to execute the privilege boundary itself.
 {
     open my $ffh, '<', $front or die $!;
-    my $fsrc = do { local $/; <$ffh> };
-    close $ffh;
+    my $fsrc = do { local $/ = undef; <$ffh> };
+    close $ffh or die $!;
+    # These needles are source text, not interpolated Perl.
     my $exec_at = index( $fsrc, 'exec $DOAS_BIN, $HELPER, @argv' );
-    my $x_at = index( $fsrc, '-x $DOAS_BIN' );
-    ok( $x_at >= 0 && $exec_at > $x_at, 'frontend checks doas before execution' );
-    unlike( $fsrc, qr/OpenBSD::Pledge::pledge\(qw\(stdio exec\)\)/,
-        'frontend does not install the removed execution promise' );
+    my $x_at    = index( $fsrc, '-x $DOAS_BIN' );
+    ok(
+        $x_at >= 0 && $exec_at > $x_at,
+        'frontend checks doas before execution'
+    );
+    unlike(
+        $fsrc,
+        qr/OpenBSD::Pledge::pledge\(qw\(stdio exec\)\)/,
+        'frontend does not install the removed execution promise'
+    );
 }
 
 # Documentation references
 for my $doc ( "$root/README.md", "$root/man/Xsunaba.1" ) {
     open my $dh, '<', $doc or die $!;
-    my $text = do { local $/; <$dh> };
-    close $dh;
+    my $text = do { local $/ = undef; <$dh> };
+    close $dh or die $!;
     like( $text, qr/_xsunaba_app/, "dedicated app account documented: $doc" );
     like( $text, qr/_xsunaba_xephyr/,
         "dedicated Xephyr account documented: $doc" );

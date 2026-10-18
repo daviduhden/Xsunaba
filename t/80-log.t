@@ -2,8 +2,11 @@
 
 use strict;
 use warnings;
-use Test::More;
+## no critic (TestingAndDebugging::ProhibitNoWarnings)
+# VERBOSE is a package variable declared in the helper; the single
+# fully-qualified assignment is not a typo.
 no warnings qw(once);
+use Test::More;
 use FindBin;
 
 # The cookie must never appear in any diagnostic output, log line or
@@ -12,8 +15,8 @@ use FindBin;
 # output statement may reference the cookie variable.
 my $helper = "$FindBin::Bin/../libexec/xsunaba-helper";
 open my $fh, '<', $helper or die $!;
-my $src = do { local $/; <$fh> };
-close $fh;
+my $src = do { local $/ = undef; <$fh> };
+close $fh or die $!;
 
 my @out        = grep { /\b(logi|logw|_err|die_tool)\b/ } split /\n/, $src;
 my $violations = 0;
@@ -29,25 +32,27 @@ unlike( $src, qr/--cookie/, 'no --cookie argument exists', );
 
 # Messages emitted during a session reference only the display number
 # and session directory, never authentication material.
+## no critic (Modules::RequireBarewordIncludes)
+# The helper is a script, not a module; it must be loaded by path.
 require "$FindBin::Bin/../libexec/xsunaba-helper";
 use File::Temp qw(tempdir);
 local $Xsunaba::Helper::VERBOSE = 1;
 my $dir = tempdir( CLEANUP => 1 );
 my $rng = "$dir/rng";
 open my $rh, '>', $rng or die $!;
-print {$rh} 'x' x 16;
-close $rh;
+print {$rh} 'x' x 16 or die $!;
+close $rh or die $!;
 open $rh, '<', $rng or die $!;
 my $cookie = Xsunaba::Helper::gen_cookie($rh);
+close $rh or die $!;
 
 my $out;
 {
     open my $cap, '>', \$out or die $!;
-    my $old = select($cap);
+    local *STDOUT = $cap;
     Xsunaba::Helper::logi('using display :32');
     Xsunaba::Helper::logi('session directory /var/run/xsunaba/deadbeef');
-    select($old);
-    close $cap;
+    close $cap or die $!;
 }
 unlike( $out, qr/$cookie/,      'cookie never in info output' );
 unlike( $out, qr/[0-9a-f]{32}/, 'no 32-hex token in info output' );

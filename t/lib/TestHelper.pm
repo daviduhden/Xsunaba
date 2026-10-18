@@ -3,10 +3,28 @@ package TestHelper;
 use strict;
 use warnings;
 use Exporter qw(import);
+use IPC::Open3 qw(open3);
+use Symbol     qw(gensym);
 use Test::More;
 
-our @EXPORT_OK = qw(dies_ok lives_ok);
+our @EXPORT_OK = qw(dies_ok lives_ok run_capture);
 
+# Run a command without a shell and capture stdout, stderr and status.
+sub run_capture {
+    my (@cmd) = @_;
+    my $err_fh = gensym();
+    my $pid    = open3( my $in, my $out_fh, $err_fh, @cmd );
+    my $closed_in = close $in;
+    my $out = do { local $/ = undef; <$out_fh> };
+    my $err = do { local $/ = undef; <$err_fh> };
+    my $closed_out = close $out_fh;
+    my $closed_err = close $err_fh;
+    waitpid( $pid, 0 );
+    return ( defined $out ? $out : '', defined $err ? $err : '', $? );
+}
+
+## no critic (Subroutines::ProhibitSubroutinePrototypes)
+# The prototypes are the documented Test::More-style call interface.
 sub dies_ok (&;@) {
     my ( $code, @rest ) = @_;
     my $re   = @rest ? shift @rest : undef;
@@ -18,6 +36,7 @@ sub dies_ok (&;@) {
     return $err;
 }
 
+## no critic (Subroutines::ProhibitSubroutinePrototypes)
 sub lives_ok (&;@) {
     my ( $code, @rest ) = @_;
     my $re   = @rest ? shift @rest : undef;

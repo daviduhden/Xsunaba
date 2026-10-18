@@ -14,12 +14,12 @@ my $old = umask 077;
 
 mkdir "$dir/private" or die $!;
 my @d = stat "$dir/private";
-is( ( $d[2] & 0777 ), 0700, 'new directory default 0700' );
+is( ( $d[2] & oct(777) ), oct(700), 'new directory default 0700' );
 
 open my $fh, '>', "$dir/file" or die $!;
-close $fh;
+close $fh or die $!;
 my @f = stat "$dir/file";
-is( ( $f[2] & 0777 ), 0600, 'new regular file default 0600' );
+is( ( $f[2] & oct(777) ), oct(600), 'new regular file default 0600' );
 
 umask $old;
 done_testing;
