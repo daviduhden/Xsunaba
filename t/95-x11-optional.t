@@ -25,6 +25,7 @@ unless ( defined $display && length $display && -x $tool ) {
     plan skip_all =>
       'set XSUNABA_TEST_DISPLAY and build tools/ to run X11 tests';
 }
+
 sub run_xdotool {
     my (@args) = @_;
     open my $fh, '-|', 'xdotool', @args or return;

@@ -139,6 +139,7 @@ dies_ok { Xsunaba::Helper::build_pkill_argv( 'HUP', 5 ) }
 qr/signal/, 'unsupported signal rejected';
 dies_ok { Xsunaba::Helper::build_pkill_argv( 'TERM', 0 ) }
 qr/uid/, 'uid 0 rejected for pkill';
+
 # The metacharacters are the malicious input; they must stay literal.
 dies_ok { Xsunaba::Helper::build_pkill_argv( 'TERM', '$(x)' ) }
 qr/uid/, 'shell metacharacters rejected for pkill';
@@ -183,9 +184,9 @@ is( scalar( Xsunaba::Helper::stale_session_tokens() ),
 # run the real reaper against a synthetic, pre-crashed session. If any
 # readdir()/account value leaked taint, open()/unlink() would abort.
 {
-    my $helper = "$FindBin::Bin/../libexec/xsunaba-helper";
-    my $dir    = tempdir( CLEANUP => 1 );
-    my $probe  = "$dir/probe.pl";
+    my $helper    = "$FindBin::Bin/../libexec/xsunaba-helper";
+    my $dir       = tempdir( CLEANUP => 1 );
+    my $probe     = "$dir/probe.pl";
     my $probe_src = <<'PROBE';
 use strict;
 use warnings;
@@ -213,12 +214,13 @@ print "REAPED\n";
 PROBE
     open my $pf, '>', $probe or die $!;
     print {$pf} $probe_src or die $!;
-    close $pf or die $!;
+    close $pf              or die $!;
 
     my ( $stdout, $stderr, $status ) =
       run_capture( $^X, '-T', $probe, $helper, $dir, $ok_token );
     my $out = $stdout . $stderr;
-    is( $status >> 8, 0, 'reaper runs and reaps under -T without taint failures' )
+    is( $status >> 8,
+        0, 'reaper runs and reaps under -T without taint failures' )
       or diag($out);
     like( $out, qr/REAPED/, 'reaper confirmed the synthetic session removed' );
 }
