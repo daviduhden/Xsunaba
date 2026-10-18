@@ -15,7 +15,7 @@ sub write_file {
     my ( $path, $content ) = @_;
     open my $fh, '>', $path or die $!;
     print {$fh} $content or die $!;
-    close $fh or die $!;
+    close $fh            or die $!;
     return;
 }
 
@@ -146,8 +146,8 @@ sub test_env {
         XAUTHORITY => $xauth,
     );
 
-    my $fake = "$dir/fake-doas";
-    my $out  = "$dir/doas-argv";
+    my $fake     = "$dir/fake-doas";
+    my $out      = "$dir/doas-argv";
     my $perl     = $^X;
     my $fake_src = "#!$perl\n" . <<'FAKE';
 #!/usr/bin/perl
@@ -215,8 +215,8 @@ FAKE
         PATH       => $bin,
     );
 
-    my $fake = "$dir/fake-doas-resolve";
-    my $out  = "$dir/doas-argv-resolve";
+    my $fake     = "$dir/fake-doas-resolve";
+    my $out      = "$dir/doas-argv-resolve";
     my $perl     = $^X;
     my $fake_src = "#!$perl\n" . <<'FAKE';
 #!/usr/bin/perl
@@ -353,8 +353,8 @@ FAKE
         XAUTHORITY => $xauth,
     );
 
-    my $fake = "$dir/fake-doas-amnesiac";
-    my $out  = "$dir/doas-argv-amnesiac";
+    my $fake     = "$dir/fake-doas-amnesiac";
+    my $out      = "$dir/doas-argv-amnesiac";
     my $perl     = $^X;
     my $fake_src = "#!$perl\n" . <<'FAKE';
 #!/usr/bin/perl

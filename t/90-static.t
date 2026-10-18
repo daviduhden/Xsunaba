@@ -96,6 +96,7 @@ like( $src, qr/close \$am->\{lock_fh\}/, 'liveness lock closed in children' );
     open my $ffh, '<', $front or die $!;
     my $fsrc = do { local $/ = undef; <$ffh> };
     close $ffh or die $!;
+
     # These needles are source text, not interpolated Perl.
     my $exec_at = index( $fsrc, 'exec $DOAS_BIN, $HELPER, @argv' );
     my $x_at    = index( $fsrc, '-x $DOAS_BIN' );

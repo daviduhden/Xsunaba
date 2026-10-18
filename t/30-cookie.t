@@ -19,7 +19,7 @@ sub rng_file {
     my $path = "$dir/rng-" . int( rand 100_000 ) . '.bin';
     open my $fh, '>', $path or die $!;
     print {$fh} $bytes or die $!;
-    close $fh or die $!;
+    close $fh          or die $!;
     open my $rfh, '<', $path or die $!;
     return $rfh;
 }

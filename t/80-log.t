@@ -41,7 +41,7 @@ my $dir = tempdir( CLEANUP => 1 );
 my $rng = "$dir/rng";
 open my $rh, '>', $rng or die $!;
 print {$rh} 'x' x 16 or die $!;
-close $rh or die $!;
+close $rh            or die $!;
 open $rh, '<', $rng or die $!;
 my $cookie = Xsunaba::Helper::gen_cookie($rh);
 close $rh or die $!;

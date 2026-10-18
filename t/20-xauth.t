@@ -74,7 +74,7 @@ my $parent  = [
         data    => 'x' x 16,
     },
     {
-        family  => 0,                      # FamilyInternet
+        family  => 0,                             # FamilyInternet
         address => pack( 'C*', 0x7f, 0, 0, 1 ),
         number  => '0',
         name    => 'MIT-MAGIC-COOKIE-1',
@@ -169,7 +169,7 @@ qr/too long/, 'oversized record packing rejected';
 my $big = "$dir/big";
 open my $bfh, '>', $big or die $!;
 print {$bfh} 'x' x ( $Xsunaba::Helper::MAX_XAUTH + 10 ) or die $!;
-close $bfh or die $!;
+close $bfh                                              or die $!;
 dies_ok { Xsunaba::Helper::read_xauth_file($big) }
 qr/size limit/, 'oversized authority file rejected';
 
