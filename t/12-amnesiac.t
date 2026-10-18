@@ -6,8 +6,10 @@ use Test::More;
 use FindBin;
 use File::Temp qw(tempdir);
 use lib "$FindBin::Bin/lib";
-use TestHelper qw(dies_ok);
+use TestHelper qw(dies_ok run_capture);
 
+## no critic (Modules::RequireBarewordIncludes)
+# The helper is a script, not a module; it must be loaded by path.
 require "$FindBin::Bin/../libexec/xsunaba-helper";
 
 # The helper relies on the object interface of getpwnam/getgrnam
@@ -41,7 +43,7 @@ dies_ok { Xsunaba::Helper::gen_account_name( 'a' x 16 . '/' ) }
 qr/token/, 'traversal token rejected';
 
 my %uniq = map { Xsunaba::Helper::gen_account_name($_) => 1 }
-  ( '0000000000000001', '0000000000000002', '0000000000000003', );
+  qw(0000000000000001 0000000000000002 0000000000000003);
 is( scalar keys %uniq, 3, 'distinct tokens give distinct accounts' );
 
 # --- Home derivation ------------------------------------------------
@@ -57,19 +59,19 @@ my $home = Xsunaba::Helper::ephemeral_home_for($user);
 
 # regular dir owned by the right uid: safe
 my $lstat_ok = sub {
-    return ( undef, undef, 0040400, 1, 55555, 0, 0, 0, 0, 0, 0, 0, 0 );
+    return ( undef, undef, oct('40400'), 1, 55_555, 0, 0, 0, 0, 0, 0, 0, 0 );
 };
 ok(
-    Xsunaba::Helper::home_safe_to_delete( $home, $user, 55555, $lstat_ok ),
+    Xsunaba::Helper::home_safe_to_delete( $home, $user, 55_555, $lstat_ok ),
     'matching dir with matching uid is safe',
 );
 
 # symlink: unsafe
 my $lstat_link = sub {
-    return ( undef, undef, 0120400, 1, 55555, 0, 0, 0, 0, 0, 0, 0, 0 );
+    return ( undef, undef, oct('120400'), 1, 55_555, 0, 0, 0, 0, 0, 0, 0, 0 );
 };
 ok(
-    !Xsunaba::Helper::home_safe_to_delete( $home, $user, 55555, $lstat_link ),
+    !Xsunaba::Helper::home_safe_to_delete( $home, $user, 55_555, $lstat_link ),
     'symlink rejected',
 );
 
@@ -82,14 +84,14 @@ ok(
 # path outside the base: unsafe
 ok(
     !Xsunaba::Helper::home_safe_to_delete(
-        '/home/other', $user, 55555, $lstat_ok
+        '/home/other', $user, 55_555, $lstat_ok
     ),
     'foreign path rejected',
 );
 ok(
     !Xsunaba::Helper::home_safe_to_delete(
         '/var/xsunaba/home/../home/_xsunaba_0000000000000001', $user,
-        55555,                                                 $lstat_ok,
+        55_555,                                                $lstat_ok,
     ),
     'traversal path rejected',
 );
@@ -98,7 +100,7 @@ ok(
 my $lstat_missing = sub { return () };
 ok(
     !Xsunaba::Helper::home_safe_to_delete(
-        $home, $user, 55555, $lstat_missing
+        $home, $user, 55_555, $lstat_missing
     ),
     'missing path rejected',
 );
@@ -123,14 +125,21 @@ is_deeply(
     'groupdel argv',
 );
 is_deeply(
-    [ Xsunaba::Helper::build_pkill_argv( 'TERM', 55555 ) ],
+    [ Xsunaba::Helper::build_pkill_argv( 'TERM', 55_555 ) ],
     [ '/usr/bin/pkill', '-TERM', '-U', '55555', '.' ],
     'pkill argv bounded by uid',
 );
+
+# A child killed by a signal must never be reported as success: teardown
+# uses the status to decide whether an account is still in use.
+## no critic (Subroutines::ProtectPrivateSubs)
+my $signal_status = Xsunaba::Helper::_run_cmd( $^X, '-e', 'kill 15, $$' );
+is( $signal_status, 143, 'signal-terminated command is reported as failure' );
 dies_ok { Xsunaba::Helper::build_pkill_argv( 'HUP', 5 ) }
 qr/signal/, 'unsupported signal rejected';
 dies_ok { Xsunaba::Helper::build_pkill_argv( 'TERM', 0 ) }
 qr/uid/, 'uid 0 rejected for pkill';
+# The metacharacters are the malicious input; they must stay literal.
 dies_ok { Xsunaba::Helper::build_pkill_argv( 'TERM', '$(x)' ) }
 qr/uid/, 'shell metacharacters rejected for pkill';
 
@@ -160,13 +169,15 @@ ok( $ok_token =~ /\A[0-9a-f]{32}\z/, 'valid session token accepted' );
 # must be untainted: reap_stale_sessions() runs under -T and uses it to
 # build paths and command arguments, which reject tainted strings.
 my @tokens = Xsunaba::Helper::stale_session_tokens(
-    '.', '..', $ok_token, '0123456789abcdef0123456789abcde',
-    'X123456789abcdef0123456789abcdef', 'not-a-token',
+    '.', '..', $ok_token,
+    '0123456789abcdef0123456789abcde',
+    'X123456789abcdef0123456789abcdef',
+    'not-a-token',
 );
 is_deeply( \@tokens, [$ok_token],
     'only exact 32-hex session names are returned' );
-is( scalar( Xsunaba::Helper::stale_session_tokens() ), 0,
-    'no names yields no tokens' );
+is( scalar( Xsunaba::Helper::stale_session_tokens() ),
+    0, 'no names yields no tokens' );
 
 # Taint is only observable in a -T interpreter, so probe in a child:
 # run the real reaper against a synthetic, pre-crashed session. If any
@@ -175,8 +186,7 @@ is( scalar( Xsunaba::Helper::stale_session_tokens() ), 0,
     my $helper = "$FindBin::Bin/../libexec/xsunaba-helper";
     my $dir    = tempdir( CLEANUP => 1 );
     my $probe  = "$dir/probe.pl";
-    open my $pf, '>', $probe or die $!;
-    print {$pf} <<'PROBE';
+    my $probe_src = <<'PROBE';
 use strict;
 use warnings;
 my ( $helper, $rundir, $token ) = @ARGV;
@@ -201,10 +211,14 @@ Xsunaba::Helper::reap_stale_sessions();
 die "session not removed\n" if -e $session;
 print "REAPED\n";
 PROBE
-    close $pf;
+    open my $pf, '>', $probe or die $!;
+    print {$pf} $probe_src or die $!;
+    close $pf or die $!;
 
-    my $out = `$^X -T $probe $helper $dir $ok_token 2>&1`;
-    is( $? >> 8, 0, 'reaper runs and reaps under -T without taint failures' )
+    my ( $stdout, $stderr, $status ) =
+      run_capture( $^X, '-T', $probe, $helper, $dir, $ok_token );
+    my $out = $stdout . $stderr;
+    is( $status >> 8, 0, 'reaper runs and reaps under -T without taint failures' )
       or diag($out);
     like( $out, qr/REAPED/, 'reaper confirmed the synthetic session removed' );
 }

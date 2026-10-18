@@ -5,6 +5,8 @@ use warnings;
 use Test::More;
 use FindBin;
 
+## no critic (Modules::RequireBarewordIncludes)
+# The helper is a script, not a module; it must be loaded by path.
 require "$FindBin::Bin/../libexec/xsunaba-helper";
 
 my @argv = Xsunaba::Helper::build_xephyr_argv(
@@ -30,14 +32,14 @@ ok( !$count{'-host-cursor'}, 'no explicit -host-cursor' );
 
 is( $argv[0], '/usr/X11R6/bin/Xephyr', 'Xephyr path first' );
 my %seen;
-my $last;
+my $last_arg;
 for my $a (@argv) {
     if ( $a =~ /\A-\w/ && $a !~ /\A-[0-9]/ ) {
         ok( !$seen{$a}++, "option $a unique" );
     }
-    $last = $a;
+    $last_arg = $a;
 }
-is( $last, ':32', 'display is the final argument' );
+is( $last_arg, ':32', 'display is the final argument' );
 
 # screen geometry: initial size only
 my $si = 0;

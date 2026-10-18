@@ -5,6 +5,8 @@ use warnings;
 use Test::More;
 use FindBin;
 
+## no critic (Modules::RequireBarewordIncludes)
+# The helper is a script, not a module; it must be loaded by path.
 require "$FindBin::Bin/../libexec/xsunaba-helper";
 
 # Variables the invoking user might have that must never reach the
@@ -31,6 +33,8 @@ my %dirty = (
     SHELL   => '/bin/ksh',
     PATH    => '/evil/bin',
 );
+## no critic (Subroutines::ProtectPrivateSubs)
+# The environment whitelist is the unit under test.
 my $passthru = Xsunaba::Helper::_passthrough( \%dirty );
 
 my $env = Xsunaba::Helper::build_app_env(

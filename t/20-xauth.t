@@ -2,6 +2,9 @@
 
 use strict;
 use warnings;
+## no critic (TestingAndDebugging::ProhibitNoWarnings)
+# MAX_XAUTH is a package variable declared in the helper; a single
+# fully-qualified read is not a typo.
 no warnings qw(once);
 use Test::More;
 use File::Temp qw(tempdir);
@@ -9,6 +12,8 @@ use FindBin;
 use lib "$FindBin::Bin/lib";
 use TestHelper qw(dies_ok lives_ok);
 
+## no critic (Modules::RequireBarewordIncludes)
+# The helper is a script, not a module; it must be loaded by path.
 require "$FindBin::Bin/../libexec/xsunaba-helper";
 
 my ( $FAMILY_LOCAL, $FAMILY_WILD ) =
@@ -43,7 +48,7 @@ my $dir  = tempdir( CLEANUP => 1 );
 my $path = "$dir/auth";
 Xsunaba::Helper::write_xauth_file( $path, $records );
 my @st = stat $path;
-is( $st[2] & 0777, 0600, 'authority file mode 0600' );
+is( $st[2] & oct(777), oct(600), 'authority file mode 0600' );
 my $read = Xsunaba::Helper::read_xauth_file($path);
 is_deeply( $read, $records, 'file round trip' );
 
@@ -70,7 +75,7 @@ my $parent  = [
     },
     {
         family  => 0,                      # FamilyInternet
-        address => "\x7f\x00\x00\x01",
+        address => pack( 'C*', 0x7f, 0, 0, 1 ),
         number  => '0',
         name    => 'MIT-MAGIC-COOKIE-1',
         data    => $cookie0,
@@ -130,7 +135,7 @@ qr/length/i, 'short cookie rejected';
 # --- Hostile input handling ----------------------------------------
 lives_ok { Xsunaba::Helper::parse_xauth_bytes('') } qr//, 'empty file parses';
 dies_ok {
-    Xsunaba::Helper::parse_xauth_bytes("\x00\x00");
+    Xsunaba::Helper::parse_xauth_bytes( pack( 'C*', 0, 0 ) );
 }
 qr/truncated/, 'truncated header rejected';
 dies_ok {
@@ -139,7 +144,7 @@ dies_ok {
 qr/too long/, 'oversized address length rejected';
 dies_ok {
     Xsunaba::Helper::parse_xauth_bytes(
-        pack( 'n5', 256, 1, 1, 1, 1 ) . "\x00" );
+        pack( 'n5', 256, 1, 1, 1, 1 ) . pack( 'C', 0 ) );
 }
 qr/truncated/, 'truncated record rejected';
 dies_ok {
@@ -163,8 +168,8 @@ qr/too long/, 'oversized record packing rejected';
 # --- File size limit ------------------------------------------------
 my $big = "$dir/big";
 open my $bfh, '>', $big or die $!;
-print {$bfh} 'x' x ( $Xsunaba::Helper::MAX_XAUTH + 10 );
-close $bfh;
+print {$bfh} 'x' x ( $Xsunaba::Helper::MAX_XAUTH + 10 ) or die $!;
+close $bfh or die $!;
 dies_ok { Xsunaba::Helper::read_xauth_file($big) }
 qr/size limit/, 'oversized authority file rejected';
 

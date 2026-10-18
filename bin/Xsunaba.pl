@@ -25,21 +25,25 @@ our $MAX_DISPLAY = 999;
 my $UNVEIL_LOCKED = 0;
 
 sub logi {
-    print "[INFO] @_\n"
+    print {*STDOUT} "[INFO] @_\n"
       if $ENV{VERBOSE} || $ENV{XSUNABA_VERBOSE};
+    return;
 }
 
-sub logw { print STDERR "[WARN] @_\n" }
+sub logw {
+    print {*STDERR} "[WARN] @_\n";
+    return;
+}
 
 sub die_tool {
-    print STDERR "[ERROR] $_[0]\n";
+    print {*STDERR} "[ERROR] $_[0]\n";
     exit 1;
 }
 
 sub pledge {
     my ($promises) = @_;
     $promises //= $PLEDGE_PROMISES;
-    unless ( $^O eq 'openbsd' ) { logi "pledge: not on OpenBSD"; return 1 }
+    unless ( $^O eq 'openbsd' ) { logi 'pledge: not on OpenBSD'; return 1 }
     require OpenBSD::Pledge;
     my @promises = grep { length } split /\s+/, $promises;
     return 1 unless @promises;
@@ -49,7 +53,7 @@ sub pledge {
 sub unveil {
     my ( $path, $perm ) = @_;
     $perm //= 'r';
-    unless ( $^O eq 'openbsd' ) { logi "unveil: not on OpenBSD"; return 1 }
+    unless ( $^O eq 'openbsd' ) { logi 'unveil: not on OpenBSD'; return 1 }
     if     ($UNVEIL_LOCKED) {
         logw "unveil($path): already locked";
         return;
@@ -65,7 +69,7 @@ sub unveil {
 
 sub unveil_lock {
     unless ( $^O eq 'openbsd' ) {
-        logi "unveil_lock: not on OpenBSD";
+        logi 'unveil_lock: not on OpenBSD';
         return 1;
     }
     return 1 if $UNVEIL_LOCKED;
@@ -88,14 +92,14 @@ sub _reject_pledge {
     if (   ( defined $opt_pledge && $opt_pledge ne '' )
         || ( exists $ENV{XSUNABA_PLEDGE} && $ENV{XSUNABA_PLEDGE} ne '' ) )
     {
-        die "XSUNABA_PLEDGE cannot restrict an exec'd program; "
-          . "OpenBSD::Pledge does not expose execpromises";
+        die q{XSUNABA_PLEDGE cannot restrict an exec'd program; }
+          . 'OpenBSD::Pledge does not expose execpromises';
     }
 }
 
 sub sandbox {
     my %opts        = @_;
-    my $sandbox_app = $opts{app} or die "No application specified";
+    my $sandbox_app = $opts{app} or die 'No application specified';
 
     _reject_pledge( \%opts );
 
@@ -183,7 +187,7 @@ sub launch {
 
     _reject_pledge( \%opts );
 
-    my $app = $opts{app} or die "No application specified";
+    my $app = $opts{app} or die 'No application specified';
     $app = resolve_app($app)
       // die "Cannot find executable '$opts{app}' in PATH";
     my @app_args = @{ $opts{args} // [] };
@@ -191,15 +195,15 @@ sub launch {
     my $display = $opts{display} // $ENV{XSUNABA_DISPLAY} // ':32';
     my $width   = $opts{width}   // $ENV{WIDTH}           // 1024;
     my $height  = $opts{height}  // $ENV{HEIGHT}          // 768;
-    $ENV{HOME}    or die "HOME not set";
-    $ENV{DISPLAY} or die "DISPLAY not set";
+    $ENV{HOME}    or die 'HOME not set';
+    $ENV{DISPLAY} or die 'DISPLAY not set';
 
     my ($display_n) = $display =~ /\A:([0-9]{1,3})\z/
       or die "Invalid display '$display' (expected :number)";
     die "Display must be in 1..$MAX_DISPLAY"
       if $display_n < 1 || $display_n > $MAX_DISPLAY;
-    _valid_number( 'width',  $width,  32767 );
-    _valid_number( 'height', $height, 32767 );
+    _valid_number( 'width',  $width,  32_767 );
+    _valid_number( 'height', $height, 32_767 );
 
     my ($parent_display) = $ENV{DISPLAY} =~ /\A(:[0-9]{1,4}(?:\.[0-9]{1,4})?)\z/
       or die "Invalid DISPLAY '$ENV{DISPLAY}' (expected local :number)";
@@ -248,8 +252,6 @@ sub launch {
     die "exec $DOAS_BIN: $!";
 }
 
-package main;
-
 unless (caller) {
     $ENV{XSUNABA_VERBOSE} ||= $ENV{VERBOSE} // '';
 
@@ -260,7 +262,7 @@ unless (caller) {
     }
 
     @ARGV
-      or Xsunaba::die_tool "Usage: Xsunaba [--amnesiac] [command args...]";
+      or Xsunaba::die_tool 'Usage: Xsunaba [--amnesiac] [command args...]';
 
     exit Xsunaba::launch(
         amnesiac => $amnesiac,

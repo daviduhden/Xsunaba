@@ -8,16 +8,18 @@ use FindBin;
 use lib "$FindBin::Bin/lib";
 use TestHelper qw(dies_ok lives_ok);
 
+## no critic (Modules::RequireBarewordIncludes)
+# The helper is a script, not a module; it must be loaded by path.
 require "$FindBin::Bin/../libexec/xsunaba-helper";
 
 my $dir = tempdir( CLEANUP => 1 );
 
 sub rng_file {
     my ($bytes) = @_;
-    my $path = "$dir/rng-" . int( rand 100000 ) . ".bin";
+    my $path = "$dir/rng-" . int( rand 100_000 ) . '.bin';
     open my $fh, '>', $path or die $!;
-    print {$fh} $bytes;
-    close $fh;
+    print {$fh} $bytes or die $!;
+    close $fh or die $!;
     open my $rfh, '<', $path or die $!;
     return $rfh;
 }

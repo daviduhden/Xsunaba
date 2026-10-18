@@ -53,8 +53,12 @@ our @EXPORT_OK = qw(
 );
 our %EXPORT_TAGS = ( all => \@EXPORT_OK );
 
+## no critic (ValuesAndExpressions::ProhibitConstantPragma)
+# Readonly/Const::Fast are not core modules; use constant is the
+# dependency-free way to name these wire-format values.
 use constant FAMILY_LOCAL => 256;      # FamilyLocal
-use constant FAMILY_WILD  => 65535;    # FamilyWild
+## no critic (ValuesAndExpressions::ProhibitConstantPragma)
+use constant FAMILY_WILD => 65_535;    # FamilyWild
 
 # Fixed paths and account names. The helper refuses to proceed if the
 # accounts do not exist with the expected relationship.
@@ -69,7 +73,7 @@ our $MINIMAL_PATH = '/usr/X11R6/bin:/usr/bin:/bin';
 our $MAX_DISPLAY  = 999;
 our $SOCKET_MODE  = oct(660);    # 0660: owner and group read+write
 our $MAX_AUTH_LEN = 4096;
-our $MAX_XAUTH    = 1048576;                                         # 1 MiB
+our $MAX_XAUTH    = 1_048_576;                                       # 1 MiB
 our $COOKIE_LEN   = 16;
 our $VERBOSE      = 0;
 
@@ -85,12 +89,25 @@ our $PKILL_BIN           = '/usr/bin/pkill';
 
 our @PASSTHROUGH_ENV = qw(TERM TZ LANG LC_ALL LC_CTYPE LC_MESSAGES);
 
-sub logi { print "[INFO] @_\n" if $VERBOSE }
-sub logw { print STDERR "[WARN] @_\n" }
-sub _err { print STDERR "[ERROR] @_\n" }
+my %VALID_SIGNAL = map { $_ => 1 } qw(TERM KILL 0);
+
+sub logi {
+    print {*STDOUT} "[INFO] @_\n" if $VERBOSE;
+    return;
+}
+
+sub logw {
+    print {*STDERR} "[WARN] @_\n";
+    return;
+}
+
+sub _err {
+    print {*STDERR} "[ERROR] @_\n";
+    return;
+}
 
 sub die_tool {
-    print STDERR "[ERROR] $_[0]\n";
+    print {*STDERR} "[ERROR] $_[0]\n";
     exit 1;
 }
 
@@ -102,6 +119,74 @@ sub _untaint {
     return $clean;
 }
 
+sub _parse_parent_display {
+    my ($raw) = @_;
+    $raw //= '';
+    my ($display) = $raw =~ /\A(:[0-9]{1,4}(?:\.[0-9]{1,4})?)\z/;
+    $display // die "invalid parent display '$raw'\n";
+    return $display;
+}
+
+sub _parse_parent_xauth {
+    my ($raw) = @_;
+    my $path = _untaint( $raw, 'parent Xauthority path' );
+    die "parent Xauthority path must be absolute\n"
+      unless $path =~ m{\A/};
+    die "parent Xauthority path too long\n" if length($path) > 4096;
+    return $path;
+}
+
+sub _parse_display {
+    my ($raw) = @_;
+    return 32 unless defined $raw;
+    my ($number) = $raw =~ /\A([0-9]{1,3})\z/
+      or die "invalid display '$raw'\n";
+    die "display must be in 1..$MAX_DISPLAY\n"
+      if $number < 1 || $number > $MAX_DISPLAY;
+    return 0 + $number;
+}
+
+sub _parse_dimension {
+    my ( $what, $raw ) = @_;
+    $raw //= $what eq 'width' ? 1024 : 768;
+    my ($number) = $raw =~ /\A([0-9]{1,5})\z/
+      or die "invalid $what '$raw'\n";
+    die "$what must be in 1..32767\n"
+      if $number < 1 || $number > 32_767;
+    return $number;
+}
+
+sub _parse_unveil {
+    my ($raw) = @_;
+    return [] unless defined $raw && length $raw;
+    my @entries = split /,/, $raw;
+    die "too many unveil entries\n" if @entries > 64;
+    my @clean;
+    for my $entry (@entries) {
+        my ( $path, $perm ) = $entry =~ /\A([^:]+):([rwxc]+)\z/
+          or die "invalid unveil entry '$entry'\n";
+        $path = _untaint( $path, 'unveil path' );
+        die "unveil path must be absolute\n" unless $path =~ m{\A/};
+        die "unveil path too long\n" if length($path) > 1024;
+        push @clean, "$path:$perm";
+    }
+    return \@clean;
+}
+
+sub _parse_app {
+    my (@argv) = @_;
+    die "no application specified\n" unless @argv;
+    die "too many application arguments\n" if @argv > 256;
+    my $app = _untaint( shift @argv, 'application path' );
+    die "application path must be absolute\n" unless $app =~ m{\A/};
+    die "application path too long\n" if length($app) > 4096;
+    my @args = map { _untaint( $_, 'application argument' ) } @argv;
+    for my $arg (@args) {
+        die "application argument too long\n" if length($arg) > 4096;
+    }
+    return ( $app, \@args );
+}
+
 #
 # Argument parsing. Returns a hash reference or dies with a
 # descriptive error. Nothing from the environment is consulted.
@@ -111,9 +196,9 @@ sub parse_args {
     my %o = ( verbose => 0 );
 
     my $usage = sub {
-        die "usage: xsunaba-helper --parent-display :N "
-          . "--parent-xauth FILE [--display N] [--width N] "
-          . "[--height N] [--unveil PATH:PERM,...] [--amnesiac] "
+        die 'usage: xsunaba-helper --parent-display :N '
+          . '--parent-xauth FILE [--display N] [--width N] '
+          . '[--height N] [--unveil PATH:PERM,...] [--amnesiac] '
           . "[--verbose] -- APP [ARGS...]\n";
     };
 
@@ -123,90 +208,41 @@ sub parse_args {
         return $value;
     };
 
+    my %takes_value = (
+        '--parent-display' => 'parent_display',
+        '--parent-xauth'   => 'parent_xauth',
+        '--display'        => 'display',
+        '--width'          => 'width',
+        '--height'         => 'height',
+        '--unveil'         => 'unveil',
+    );
+    my %is_flag = ( '--amnesiac' => 'amnesiac', '--verbose' => 'verbose' );
+
     my $i = 0;
     while ( $i < @argv ) {
         my $a = $argv[$i];
         last if $a eq '--';
-        if ( $a eq '--parent-display' ) {
-            $o{parent_display} = $need->( $a, $argv[ ++$i ] );
+        if ( my $value_key = $takes_value{$a} ) {
+            $o{$value_key} = $need->( $a, $argv[ ++$i ] );
         }
-        elsif ( $a eq '--parent-xauth' ) {
-            $o{parent_xauth} = $need->( $a, $argv[ ++$i ] );
+        elsif ( my $flag_key = $is_flag{$a} ) {
+            $o{$flag_key} = 1;
         }
-        elsif ( $a eq '--display' ) {
-            $o{display} = $need->( $a, $argv[ ++$i ] );
+        else {
+            $usage->();
         }
-        elsif ( $a eq '--width' ) {
-            $o{width} = $need->( $a, $argv[ ++$i ] );
-        }
-        elsif ( $a eq '--height' ) {
-            $o{height} = $need->( $a, $argv[ ++$i ] );
-        }
-        elsif ( $a eq '--unveil' ) {
-            $o{unveil} = $need->( $a, $argv[ ++$i ] );
-        }
-        elsif ( $a eq '--amnesiac' ) { $o{amnesiac} = 1 }
-        elsif ( $a eq '--verbose' )  { $o{verbose} = 1 }
-        else                         { $usage->() }
         $i++;
     }
     $usage->() if $i >= @argv || $argv[$i] ne '--';
     my @app = @argv[ $i + 1 .. $#argv ];
-    die "no application specified\n" unless @app;
-    die "too many application arguments\n" if @app > 256;
 
-    my $pd_raw = $o{parent_display} // '';
-    my ($pd) = $pd_raw =~ /\A(:[0-9]{1,4}(?:\.[0-9]{1,4})?)\z/;
-    $pd // die "invalid parent display '$pd_raw'\n";
-    $o{parent_display} = $pd;
-
-    my $px = _untaint( $o{parent_xauth}, 'parent Xauthority path' );
-    die "parent Xauthority path must be absolute\n" unless $px =~ m{\A/};
-    die "parent Xauthority path too long\n" if length($px) > 4096;
-    $o{parent_xauth} = $px;
-
-    if ( exists $o{display} ) {
-        my ($n) = $o{display} =~ /\A([0-9]{1,3})\z/
-          or die "invalid display '$o{display}'\n";
-        die "display must be in 1..$MAX_DISPLAY\n"
-          if $n < 1 || $n > $MAX_DISPLAY;
-        $o{display} = 0 + $n;
-    }
-    else { $o{display} = 32 }
-
-    for my $what (qw(width height)) {
-        $o{$what} //= $what eq 'width' ? 1024 : 768;
-        my ($n) = $o{$what} =~ /\A([0-9]{1,5})\z/
-          or die "invalid $what '$o{$what}'\n";
-        die "$what must be in 1..32767\n" if $n < 1 || $n > 32767;
-        $o{$what} = $n;
-    }
-
-    if ( defined $o{unveil} && length $o{unveil} ) {
-        my @entries = split /,/, $o{unveil};
-        die "too many unveil entries\n" if @entries > 64;
-        my @clean;
-        for my $entry (@entries) {
-            my ( $path, $perm ) = $entry =~ /\A([^:]+):([rwxc]+)\z/
-              or die "invalid unveil entry '$entry'\n";
-            $path = _untaint( $path, 'unveil path' );
-            die "unveil path must be absolute\n" unless $path =~ m{\A/};
-            die "unveil path too long\n" if length($path) > 1024;
-            push @clean, "$path:$perm";
-        }
-        $o{unveil} = \@clean;
-    }
-    else { $o{unveil} = [] }
-
-    my $app = _untaint( shift @app, 'application path' );
-    die "application path must be absolute\n" unless $app =~ m{\A/};
-    die "application path too long\n" if length($app) > 4096;
-    my @args = map { _untaint( $_, 'application argument' ) } @app;
-    for my $arg (@args) {
-        die "application argument too long\n" if length($arg) > 4096;
-    }
-    $o{app}      = $app;
-    $o{app_args} = \@args;
+    $o{parent_display} = _parse_parent_display( $o{parent_display} );
+    $o{parent_xauth}   = _parse_parent_xauth( $o{parent_xauth} );
+    $o{display}        = _parse_display( $o{display} );
+    $o{width}          = _parse_dimension( 'width',  $o{width} );
+    $o{height}         = _parse_dimension( 'height', $o{height} );
+    $o{unveil}         = _parse_unveil( $o{unveil} );
+    ( $o{app}, $o{app_args} ) = _parse_app(@app);
     $o{amnesiac} ||= 0;
 
     $VERBOSE = $o{verbose};
@@ -291,7 +327,8 @@ sub build_groupdel_argv {
 
 sub build_pkill_argv {
     my ( $signal, $uid ) = @_;
-    die "invalid signal\n" unless $signal =~ /\A(?:TERM|KILL|0)\z/;
+    die "invalid signal\n"
+      unless defined $signal && $VALID_SIGNAL{$signal};
     die "invalid uid\n"    unless $uid    =~ /\A[1-9][0-9]*\z/;
     return ( $PKILL_BIN, "-$signal", '-U', $uid, '.' );
 }
@@ -346,6 +383,7 @@ sub write_xauth_file {
           or die "write $path: $!";
     }
     close $fh or die "close $path: $!";
+    return 1;
 }
 
 sub parse_xauth_bytes {
@@ -444,7 +482,7 @@ sub gen_cookie {
           or die "open /dev/urandom: $!";
         sysread( $rfh, $buf, $COOKIE_LEN ) == $COOKIE_LEN
           or die "short read from /dev/urandom\n";
-        close $rfh;
+        close $rfh or die "close /dev/urandom: $!";
     }
     my ($hex) = unpack( 'H*', $buf ) =~ /\A([0-9a-f]{32})\z/
       or die "invalid random data\n";
@@ -565,8 +603,8 @@ sub run {
     my (@argv) = @_;
 
     $^O eq 'openbsd'
-      or die_tool "xsunaba-helper runs on OpenBSD only";
-    die_tool "xsunaba-helper must be invoked through doas as root"
+      or die_tool 'xsunaba-helper runs on OpenBSD only';
+    die_tool 'xsunaba-helper must be invoked through doas as root'
       unless getuid() == 0 && geteuid() == 0;
 
     my $opts = parse_args(@argv);
@@ -584,21 +622,21 @@ sub run {
     require OpenBSD::Unveil;
 
     # Scrub the environment. doas already built a fresh one; keep only
-    # what the children genuinely may receive.
+    # what the children genuinely may receive. Scope the replacement to
+    # this invocation so an embedding caller regains its environment.
     my $passthru  = _passthrough( \%ENV );
     my $doas_user = $ENV{DOAS_USER};
-    %ENV = ();
-    $ENV{PATH} = $MINIMAL_PATH;
+    local %ENV = ( PATH => $MINIMAL_PATH );
 
     # The invoking user (as reported by doas) must own the parent
     # Xauthority file. This prevents a login user from using the root
     # helper to extract records from authority files of other users.
     # doas(1) always sets DOAS_USER; require it so the ownership check
     # cannot be skipped by invoking the helper outside doas.
-    die_tool "DOAS_USER not set; run the helper through doas(1)"
+    die_tool 'DOAS_USER not set; run the helper through doas(1)'
       unless defined $doas_user && length $doas_user;
     my ($user) = $doas_user =~ /\A([A-Za-z0-9._][A-Za-z0-9._-]{0,30})\z/
-      or die_tool "invalid DOAS_USER";
+      or die_tool 'invalid DOAS_USER';
     my $pw = getpwnam($user)
       or die_tool "DOAS_USER '$user' unknown";
     my @st = stat $opts->{parent_xauth}
@@ -748,7 +786,7 @@ sub run {
           eval { extract_parent_auth( $records, $opts->{parent_display} ) };
         $fatal->("$@") if $@;
         @$matched
-          or $fatal->( "no MIT-MAGIC-COOKIE-1 entry for "
+          or $fatal->( 'no MIT-MAGIC-COOKIE-1 entry for '
               . "$opts->{parent_display} in $opts->{parent_xauth}" );
         write_xauth_file( $parent_auth, $matched );
         chown( $xephyr->uid, $xephyr->gid, $parent_auth ) == 1
@@ -785,12 +823,16 @@ sub run {
         # shared across fork(2), so an exec'd child holding them would
         # keep display.lock (and, in amnesiac mode, active.lock) locked
         # for the whole session, defeating the intended lock lifetime.
-        close $lock;
-        close $am->{lock_fh} if $am->{lock_fh};
+        close $lock
+          or do { _err("close display lock: $!"); _exit(1); };
+        if ( $am->{lock_fh} ) {
+            close $am->{lock_fh}
+              or do { _err("close liveness lock: $!"); _exit(1); };
+        }
 
         chdir $xephyr_dir
           or do { _err("chdir $xephyr_dir: $!"); _exit(1); };
-        %ENV = %{
+        local %ENV = %{
             build_xephyr_env(
                 display    => $opts->{parent_display},
                 xauthority => $parent_auth,
@@ -799,7 +841,7 @@ sub run {
             )
         };
         drop_privs( $xephyr->uid, $xephyr->gid )
-          or do { _err("failed to drop privileges for Xephyr"); _exit(1); };
+          or do { _err('failed to drop privileges for Xephyr'); _exit(1); };
         {
             exec build_xephyr_argv(
                 display     => ":$display",
@@ -816,12 +858,12 @@ sub run {
     # --- Wait for the socket, then restrict it ---
     _wait_for_socket( $socket, $xephyr_pid, $xephyr->uid, $socket_gid, $fatal,
     );
-    close $lock;
+    close $lock or $fatal->("close $RUN_DIR/display.lock: $!");
     logi "socket $socket restricted to " . sprintf( '%o', $SOCKET_MODE );
 
     # Honour a signal that arrived before the application was started
     # (the handler only kills children that already exist).
-    $fatal->("interrupted before launching the application") if $aborted;
+    $fatal->('interrupted before launching the application') if $aborted;
 
     # --- Application, as the dedicated application UID ---
     $app_pid = fork();
@@ -831,11 +873,14 @@ sub run {
 
         # The display lock is already closed above; drop the amnesiac
         # liveness lock as well so it tracks the helper, not the app.
-        close $am->{lock_fh} if $am->{lock_fh};
+        if ( $am->{lock_fh} ) {
+            close $am->{lock_fh}
+              or do { _err("close liveness lock: $!"); _exit(1); };
+        }
 
         chdir $app_home
           or do { _err("chdir $app_home: $!"); _exit(1); };
-        %ENV = %{
+        local %ENV = %{
             build_app_env(
                 display     => ":$display",
                 xauthority  => $client_auth,
@@ -848,7 +893,7 @@ sub run {
         };
         drop_privs( $app_uid, $app_gid )
           or do {
-            _err("failed to drop privileges for the application");
+            _err('failed to drop privileges for the application');
             _exit(1);
           };
         if ( @{ $opts->{unveil} } ) {
@@ -895,9 +940,12 @@ sub run {
             last;
         }
         if ( $pid == $xephyr_pid ) {
-            _err "Xephyr exited unexpectedly";
+            _err 'Xephyr exited unexpectedly';
             $app_status = 1;
             $aborted    = 1;
+            # It has already been reaped; do not signal a recycled PID
+            # during the cleanup below.
+            $xephyr_pid = undef;
             last;
         }
         last if $pid < 0;
@@ -916,7 +964,7 @@ sub run {
     else {
         remove_tree( $session, { safe => 1 } );
     }
-    logi "cleanup complete";
+    logi 'cleanup complete';
     return exit_status( defined $app_status ? $app_status : 1 );
 }
 
@@ -931,6 +979,7 @@ sub _ensure_run_dir {
     $st[4] == 0               or die "$RUN_DIR is not owned by root\n";
     ( $st[2] & oct(22) ) == 0 or die "$RUN_DIR is group or world writable\n";
     chmod 0711, $RUN_DIR or die "chmod $RUN_DIR: $!";
+    return 1;
 }
 
 sub _hostname {
@@ -946,9 +995,10 @@ sub _hostname {
 
 #
 # Run an external command with execve-style arguments (no shell) and
-# return its exit status. Only used with fixed, validated argv built
-# by the amnesiac helpers. Returns -1 if the child cannot be forked;
-# never dies, so cleanup paths cannot be interrupted.
+# return its exit status, mapping signal termination to 128+signal.
+# Only used with fixed, validated argv built by the amnesiac helpers.
+# Returns -1 if the child cannot be forked; never dies, so cleanup
+# paths cannot be interrupted.
 #
 sub _run_cmd {
     my (@argv) = @_;
@@ -964,7 +1014,7 @@ sub _run_cmd {
         _exit(127);
     }
     waitpid( $pid, 0 );
-    return $? == -1 ? -1 : ( $? >> 8 );
+    return exit_status($?);
 }
 
 sub _ensure_ephemeral_bases {
@@ -980,6 +1030,7 @@ sub _ensure_ephemeral_bases {
         ( $st[2] & oct(22) ) == 0 or die "$dir is group or world writable\n";
         chmod 0711, $dir or die "chmod $dir: $!";
     }
+    return 1;
 }
 
 #
@@ -1020,7 +1071,7 @@ sub _amnesiac_create {
         }
         $user = undef;
     }
-    $fatal->("useradd failed for amnesiac account")
+    $fatal->('useradd failed for amnesiac account')
       unless $am->{user_created};
 
     my $pw = getpwnam($user) or $fatal->("cannot resolve $user");
@@ -1043,6 +1094,7 @@ sub _amnesiac_create {
     mkdir $home, 0700 or $fatal->("mkdir $home: $!");
     chown( $uid, $gid, $home ) == 1 or $fatal->("chown $home: $!");
     $am->{home_created} = 1;
+    return 1;
 }
 
 #
@@ -1055,7 +1107,8 @@ sub _amnesiac_teardown {
     my ( $am, $session ) = @_;
 
     if ( $am->{lock_fh} ) {
-        close delete $am->{lock_fh};
+        my $lock_fh = delete $am->{lock_fh};
+        close $lock_fh or logw "close liveness lock: $!";
     }
 
     my $procs_gone = 1;
@@ -1070,7 +1123,7 @@ sub _amnesiac_teardown {
         my $alive = _run_cmd( build_pkill_argv( '0', $am->{uid} ) );
         if ( $alive != 1 ) {
             logw "processes may still run as $am->{user}; "
-              . "account not removed to avoid UID reuse";
+              . 'account not removed to avoid UID reuse';
             $procs_gone = 0;
         }
     }
@@ -1103,6 +1156,7 @@ sub _amnesiac_teardown {
               or logw "groupdel $am->{user} failed";
         }
     }
+    return;
 }
 
 #
@@ -1143,7 +1197,7 @@ sub reap_stale_sessions {
         if ( open my $af, '<', "$dir/account" ) {
             local $/ = undef;
             my $name = <$af>;
-            close $af;
+            close $af or logw "close $dir/account: $!";
             if ( defined $name ) {
                 chomp $name;
                 # Capture to clear taint: the name is used as a path
@@ -1191,17 +1245,18 @@ sub reap_stale_sessions {
                 # once the remaining processes are gone.
                 $reaped = 0;
                 logw "processes may still run as $user; session left"
-                  . " for a later reap";
+                  . ' for a later reap';
             }
         }
         if ($reaped) {
             remove_tree( $dir, { safe => 1 } );
-            logw "reaped stale amnesiac session"
+            logw 'reaped stale amnesiac session'
               . ( defined $user ? " $user" : '' );
         }
-        close $lfh;
+        close $lfh or logw "close $dir/active.lock: $!";
     }
-    close $glock;
+    close $glock or logw "close $RUN_DIR/reaper.lock: $!";
+    return;
 }
 
 sub _random_hex {
@@ -1211,7 +1266,7 @@ sub _random_hex {
     my $buf = '';
     sysread( $fh, $buf, $bytes ) == $bytes
       or die "short read from /dev/urandom\n";
-    close $fh;
+    close $fh or die "close /dev/urandom: $!";
     my ($hex) = unpack( 'H*', $buf ) =~ /\A([0-9a-f]+)\z/
       or die "invalid random data\n";
     return $hex;
@@ -1245,6 +1300,7 @@ sub _wait_for_socket {
         Time::HiRes::sleep(0.05);
     }
     $fatal->("timed out waiting for Xephyr to open $socket");
+    return;
 }
 
 sub _stop_child {
@@ -1261,18 +1317,17 @@ sub _stop_child {
         waitpid( $pid, 0 );
     }
     logi "stopped $what (PID $pid)";
+    return;
 }
 
 sub _stop_xephyr {
     my ( $pid, $socket, $uid ) = @_;
-    return unless $pid;
-    _stop_child( $pid, 'Xephyr' );
+    _stop_child( $pid, 'Xephyr' ) if $pid;
     if ( lstat $socket && -S _ && ( stat _ )[4] == $uid ) {
         unlink $socket or logw "cannot remove $socket: $!";
     }
+    return;
 }
-
-package main;
 
 unless (caller) {
     exit Xsunaba::Helper::run(@ARGV);

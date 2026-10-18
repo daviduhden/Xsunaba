@@ -25,9 +25,16 @@ unless ( defined $display && length $display && -x $tool ) {
     plan skip_all =>
       'set XSUNABA_TEST_DISPLAY and build tools/ to run X11 tests';
 }
-my @xdotool = qw(xdotool);
-my $probe   = `xdotool version 2>&1`;
-if ( $? != 0 ) {
+sub run_xdotool {
+    my (@args) = @_;
+    open my $fh, '-|', 'xdotool', @args or return;
+    my $out    = do { local $/ = undef; <$fh> };
+    my $closed = close $fh;
+    return ( defined $out ? $out : '', $? );
+}
+
+my ( $probe, $probe_status ) = run_xdotool('version');
+if ( !defined $probe || $probe_status != 0 ) {
     plan skip_all => 'xdotool not available';
 }
 
@@ -43,7 +50,7 @@ if ( $pid == 0 ) {
 }
 
 sleep 2;
-my $win = `xdotool search --name popup-grab-test 2>/dev/null`;
+my ($win) = run_xdotool( 'search', '--name', 'popup-grab-test' );
 chomp $win;
 if ( !length $win ) {
     kill 'KILL', $pid;
@@ -54,16 +61,16 @@ if ( !length $win ) {
 my $ok = 1;
 
 # click the menu bar (top 40 rows of a 640x480 window at 0,0)
-$ok &&= system( @xdotool, 'mousemove', '--sync', '100', '20' ) == 0;
-$ok &&= system( @xdotool, 'click', '1' ) == 0;
+$ok &&= system( 'xdotool', 'mousemove', '--sync', '100', '20' ) == 0;
+$ok &&= system( 'xdotool', 'click', '1' ) == 0;
 sleep 1;
 
 # popup appears at x=92,y=40; click every item center
 for my $i ( 0 .. 4 ) {
     my $x = 92 + 60;
     my $y = 40 + 8 + $i * 28 + 12;
-    $ok &&= system( @xdotool, 'mousemove', '--sync', $x, $y ) == 0;
-    $ok &&= system( @xdotool, 'click', '1' ) == 0;
+    $ok &&= system( 'xdotool', 'mousemove', '--sync', $x, $y ) == 0;
+    $ok &&= system( 'xdotool', 'click', '1' ) == 0;
     sleep 0.4;
 }
 ok( $ok, 'xdotool input injection succeeded' );
@@ -78,8 +85,8 @@ $status = $?;
 
 open my $fh, '<', "$FindBin::Bin/../tools/popup-grab-test.log"
   or die $!;
-my $log = do { local $/; <$fh> };
-close $fh;
+my $log = do { local $/ = undef; <$fh> };
+close $fh or die $!;
 
 is( $status >> 8, 0, 'popup-grab-test exited 0 (all items clicked)' );
 like( $log, qr/pointer grabbed/,   'pointer grab succeeded' );
