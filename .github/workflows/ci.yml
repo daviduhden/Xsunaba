@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   # Fast, portable subset. Runs on the host runner and catches pure-Perl
@@ -26,9 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Build and test on OpenBSD
-        uses: vmactions/openbsd-vm@v1
+        uses: vmactions/openbsd-vm@v1.4.9
         with:
-          release: "7.9"
+          release: "8.0"
           run: |
             set -e
             uname -a
