@@ -11,8 +11,8 @@ Japanese word 砂場 (_sunaba_, meaning sandbox).
 The security boundary is **Unix account separation plus X11
 authentication plus socket permissions**. Xephyr and the application
 run under dedicated local users that are distinct from your login
-user. Neither account can read your credentials, and your login user
-cannot read the nested display's credentials. Optional `unveil(2)` rules
+user. Neither account can read your credentials, and an unprivileged
+login user cannot read the nested display's credentials. Optional `unveil(2)` rules
 restrict pre-exec setup only; they are cleared by execve without
 execpromises. The frontend stays unpledged; the supervisor can pledge
 after launching its children in persistent-account mode.
@@ -27,7 +27,7 @@ _xsunaba_xephyr  (runs Xephyr only)
     | nested X display :NN
     v
 application UID  (persistent: _xsunaba_app)
-                 (amnesiac:  _xsunaba_<random>, fresh per session)
+                 (amnesiac:  _xsunaba_<random>, fresh account per session)
 ```
 
 The Xephyr outer window is a normal, host-WM-resizable application
@@ -41,7 +41,7 @@ on the host resizes the nested screen through Xephyr's RandR support.
 | Login user | yours | Parent display, everything you own |
 | `_xsunaba_xephyr` | dedicated | Parent display (as Xephyr's outer window), nested display server side |
 | `_xsunaba_app` (persistent) | dedicated | Nested display only |
-| `_xsunaba_<random>` (amnesiac) | fresh per session | Nested display only; deleted at session end |
+| `_xsunaba_<random>` (amnesiac) | fresh account per session | Nested display only; deleted at session end |
 
 ### Why this matters
 
@@ -91,8 +91,8 @@ The redesign removes that dependency on voluntary cooperation:
   share the `_xsunaba_app` account, so an application in one session
   can read another session's application-side files (including its
   client authority file) and its shared home directory. Per-session
-  isolation requires per-session UIDs, which is exactly what amnesiac
-  mode provides.
+  isolation requires a per-session account and UID, which is what
+  amnesiac mode creates for each invocation.
 - There is no window manager inside the Xephyr display. The
   application runs at the initial resolution and can be resized by
   resizing the Xephyr window. Wrap the command in a shell script if
@@ -112,8 +112,9 @@ The redesign removes that dependency on voluntary cooperation:
 ## Prerequisites
 
 - **OpenBSD** with Perl (both in base).
-- **Xephyr** from the `xserv` installation set (e.g. `xserv79.tgz` on
-  OpenBSD 7.9); it is not installed with `pkg_add`.
+- **Xephyr** from the `xserv` installation set (for example
+  `xserv80.tgz` on OpenBSD 8.0, the version exercised by CI); it is not
+  installed with `pkg_add`.
 - **doas(1)** (in base) with the rule described below.
 - No `xauth` or `openssl` dependency: authority databases are parsed,
   built and written directly by the helper, and cookies come from
@@ -142,7 +143,9 @@ helper's validated interface. `doas.conf`'s `args` option matches the
 complete argument list exactly (it cannot express a prefix), so a fixed
 argument list cannot cover a session whose display, geometry and
 application vary; the helper's own parser is the argument gate and
-rejects every unsupported or malformed argument.
+rejects every unsupported or malformed argument. Never add
+`DOAS_USER` to `setenv`: `doas` would then take it from the caller and
+the helper's parent-Xauthority ownership check could be spoofed.
 
 `doas` builds a fresh environment for the helper and only inherits
 `DISPLAY` and `TERM` by default; the `setenv` option keeps the
@@ -158,8 +161,27 @@ and the sandbox falls back to the C locale and UTC.
 | `_xsunaba_app` | `_xsunaba` | `/home/_xsunaba_app` | ksh | Runs applications |
 | `_xsunaba` (group) | - | - | - | Socket group for the application UID |
 
-Review the commands in the Makefile before running them; they are
-idempotent.
+Review the commands in the Makefile before running them; reruns are
+idempotent for entries that already exist, but they do not repair an
+account whose UID, GID, home, shell or password state differs from the
+expected configuration.
+
+The frontend hardcodes `/usr/local/libexec/xsunaba-helper`. Keep the
+default `PREFIX=/usr/local`, or update `bin/Xsunaba.pl` and the doas
+rule consistently if you install elsewhere.
+
+### Testing
+
+Run the regression suite as an unprivileged user:
+
+```
+$ make test              # prove -I t/lib -v t/
+$ prove -I t/lib t/      # same tests without verbose output
+```
+
+The suite does not require root, `doas`, Xephyr, `xauth`, or account
+creation. The optional X11 input test is opt-in and needs a built
+`tools/popup-grab-test`, a running display and `xdotool`.
 
 ### Uninstalling
 
@@ -181,13 +203,24 @@ $ Xsunaba xterm &
 $ Xsunaba gimp &
 ```
 
-A bare command name is resolved through your `PATH` (as a shell would);
-an absolute path is used as given.
+A bare command name is resolved through the absolute entries of your
+`PATH`; relative `PATH` entries are ignored. A command containing a
+slash is passed to the helper unchanged and must be an absolute path
+that the sandbox account can execute. The frontend resolves and checks
+bare names as your login user; the helper does not re-check
+executability, so an absolute path that the sandbox account cannot
+execute fails in the application child.
+
+`DISPLAY` must name a local display (`:N` or `:N.S`) and `HOME` must be
+set. `XAUTHORITY` defaults to `$HOME/.Xauthority`; the file must be
+readable, regular, owned by you, and not group/world writable or world
+readable.
 
 The application runs as `_xsunaba_app` inside a Xephyr window owned
 by `_xsunaba_xephyr`. No filesystem restrictions are applied unless
 you set `XSUNABA_UNVEIL`; the Unix-account, X11-authentication and
-socket-permission layers always apply.
+socket-permission layers always apply. The application runs with its
+sandbox home as the working directory, not your current directory.
 
 ### Amnesiac mode
 
@@ -197,8 +230,8 @@ socket-permission layers always apply.
 $ Xsunaba --amnesiac tor-browser &
 ```
 
-- A fresh account `_xsunaba_<random>` with a private group, no
-  password, no usable login and a private home under
+- A fresh account `_xsunaba_<random>` with a private group, a
+  locked password (`-p '*'`), no usable login and a private home under
   `/var/xsunaba/home/` (mode 0700) is created.
 - The helper sets `umask 077` for the session, so application-created
   files default to 0600 and directories to 0700. The application may
@@ -207,20 +240,28 @@ $ Xsunaba --amnesiac tor-browser &
 - Credentials are session-specific: the application receives only the
   nested display's client authority; the nested socket is group-owned
   by the ephemeral account's private group.
-- When the session ends (normal exit, Xephyr failure, SIGINT,
+- When teardown succeeds (normal exit, Xephyr failure, SIGINT,
   SIGTERM, or startup failure), remaining processes of the ephemeral
-  UID are terminated, the session directory is removed, the verified
-  home is removed, and the account and its private group are deleted.
-  Nothing persists between invocations, and two invocations get
-  different identities.
+  UID are terminated, the verified home is removed, the account and
+  its private group are deleted, and the session directory is removed
+  last. Two invocations get different account names.
+- Teardown is conditional: if a process may still run under the
+  ephemeral UID, or home/account/group deletion fails, the helper
+  keeps the session directory and leaves the account and/or group for
+  the next amnesiac invocation to retry. Files the application created outside
+  its home (for example in `/tmp`) are not part of this cleanup. The
+  numeric UID may be reused by the OS after the account is deleted.
 - Interrupted sessions (crash, power loss) are recovered
   conservatively by the next amnesiac invocation: only session
   directories holding the helper's own liveness lock and naming the
   account in their own account file are considered, and only after
-  their UID has no remaining processes. Unrelated accounts are never
-  touched.
-- Browser profile data is destroyed with the session. For a
-  persistent profile use plain `Xsunaba firefox` instead.
+  their UID has no remaining processes. The reaper also releases a
+  recorded nested display when the recorded Xephyr PID is gone.
+  Unrelated accounts are never touched.
+- Browser profile data in the ephemeral home and session tree is
+  destroyed with the session. For a persistent profile use plain
+  `Xsunaba firefox` instead. Data written to shared, world-writable
+  locations is outside this guarantee.
 
 ### Resizable window
 
@@ -237,33 +278,41 @@ against the nested screen. No polling or restarts are involved.
 ### Restricting the filesystem with unveil
 
 Set `XSUNABA_UNVEIL` to a comma-separated list of `path:permission`
-pairs. Only these paths will be visible to the application:
+pairs. The helper applies the entries to the application child before
+`execve`, then locks unveil:
 
 ```
 $ XSUNABA_UNVEIL="/usr/local/bin/firefox:rx,/usr/local/lib/firefox:rx,/tmp:rwc,/etc:r,/dev:r" \
   Xsunaba firefox --private-window
 ```
 
-The application can now execute `/usr/local/bin/firefox` and its
-runtime (`rx`), read and create files in `/tmp` (`rwc`) and read
-`/etc` and `/dev` (`r`). Everything else is invisible.
+During that pre-exec phase the application child can execute
+`/usr/local/bin/firefox` and its runtime (`rx`), read and create files
+in `/tmp` (`rwc`), and read `/etc` and `/dev` (`r`).
 
-Additionally, Xsunaba always unveils for the application, after your
-entries and before locking:
+When at least one entry is present, Xsunaba additionally unveils,
+after your entries and before locking:
 
 - `/tmp/.X11-unix/X<NN>` with `w` &mdash; the exact nested socket
-  only (`w` permits `connect(2)` to AF_UNIX sockets). The
-  `/tmp/.X11-unix` directory itself is **not** exposed.
+  (`w` permits `connect(2)` to AF_UNIX sockets). The helper does not
+  add the `/tmp/.X11-unix` directory itself; a user entry such as
+  `/tmp:rwc` can still expose it during pre-exec.
 - the application's own client authority file with `r`;
 - its per-session `XDG_RUNTIME_DIR` with `rwxc`.
+
+If `XSUNABA_UNVEIL` is unset or empty, no unveil call is made at all.
 
 Note that the application's home is `/home/_xsunaba_app` in
 persistent mode (or the private ephemeral home in amnesiac mode);
 unveil paths must reference it (e.g.
 `/home/_xsunaba_app/.mozilla:rwc`), not your own home.
 
-`unveil` is an **additional** restriction. The account and credential
-separation holds when `XSUNABA_UNVEIL` is unset.
+`unveil` is an **additional pre-exec restriction**, not a runtime
+containment boundary. `OpenBSD::Pledge` does not expose
+`execpromises`, and the kernel clears unveil rules on `execve`; the
+running application's filesystem view is governed by its Unix UID and
+permissions. The account and credential separation holds when
+`XSUNABA_UNVEIL` is unset.
 
 ### Sharing files with the sandbox
 
@@ -319,12 +368,15 @@ $ VERBOSE=1 Xsunaba firefox
 [INFO] using display :32
 [INFO] session directory /var/run/xsunaba/<random>
 [INFO] Xephyr started (PID 12345)
-[INFO] launched 'firefox' (PID 12346)
+[INFO] socket /tmp/.X11-unix/X32 restricted to 660
+[INFO] launched '/usr/local/bin/firefox' (PID 12346)
 [INFO] stopped Xephyr (PID 12345)
 [INFO] cleanup complete
 ```
 
-Amnesiac sessions additionally print the temporary account name.
+`VERBOSE=1` and `XSUNABA_VERBOSE=1` enable the messages; `0` or an
+empty value disables them. Amnesiac sessions additionally print the
+temporary account name.
 Authentication material never appears in any output.
 
 ## Environment variable reference
@@ -335,14 +387,20 @@ Authentication material never appears in any output.
 | `XSUNABA_DISPLAY` | `:32` | Starting display number; Xephyr scans upward for a free socket. |
 | `WIDTH` | `1024` | Initial Xephyr display width in pixels (resizable afterwards). |
 | `HEIGHT` | `768` | Initial Xephyr display height in pixels (resizable afterwards). |
-| `VERBOSE` | _(unset)_ | Emit diagnostic messages. |
-| `XSUNABA_VERBOSE` | _(unset)_ | Alias for `VERBOSE` understood by the frontend. |
+| `VERBOSE` | _(unset)_ | Emit diagnostic messages when set to a true value (for example `1`); `0` or an empty value disables them. |
+| `XSUNABA_VERBOSE` | _(unset)_ | Alias for `VERBOSE` understood by the frontend, with the same true-value rules. |
 | `XSUNABA_PLEDGE` | _(unset)_ | Must be empty; a non-empty value is rejected (see below). |
 
 A non-empty `XSUNABA_PLEDGE` value is rejected: `OpenBSD::Pledge`
 does not expose the `execpromises` argument of pledge(2), so a
 promise could not restrict an executed program and would silently
 fail to apply.
+
+The helper also bounds its input: display `1..999`, width and height
+`1..32767`, at most 64 unveil entries, unveil paths at most 1024 bytes,
+at most 256 application arguments including the command, each path or
+argument at most 4096 bytes, the parent Xauthority file at most 1 MiB,
+and individual authority fields at most 4096 bytes.
 
 The application's environment is rebuilt from scratch and contains
 only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `DISPLAY`,
@@ -403,6 +461,8 @@ XSUNABA_UNVEIL="/usr/X11R6/bin/xterm:rx,/tmp:rwc,/etc:r,/dev:r"
 | `/var/run/xsunaba/<random>/` | root:wheel | 0711 | One session. Traversable but not listable by users. |
 | `.../active.lock` | root:wheel | 0600 | Amnesiac liveness lock; stale sessions are reaped when it is free. |
 | `.../account` | root:wheel | 0600 | Amnesiac session's account name (reaping verification). |
+| `.../display` | root:wheel | 0600 | Allocated nested display number (stale-display reaping). |
+| `.../xephyr.pid` | root:wheel | 0600 | Xephyr PID; a stale display is released only when this PID is gone. |
 | `.../xephyr/` | `_xsunaba_xephyr` | 0700 | Xephyr private directory. |
 | `.../xephyr/parent-auth` | `_xsunaba_xephyr` | 0600 | Only the parent-display MIT-MAGIC-COOKIE-1 records Xephyr needs. |
 | `.../xephyr/server-auth` | `_xsunaba_xephyr` | 0600 | Fresh per-session nested cookie, passed to Xephyr via `-auth`. |
@@ -410,10 +470,11 @@ XSUNABA_UNVEIL="/usr/X11R6/bin/xterm:rx,/tmp:rwc,/etc:r,/dev:r"
 | `.../app/client-auth` | application UID | 0600 | Same nested cookie, for the application (`XAUTHORITY`). |
 | `.../app/run/` | application UID | 0700 | Per-session `XDG_RUNTIME_DIR`. |
 | `/var/xsunaba/home/_xsunaba_<random>/` | ephemeral UID | 0700 | Amnesiac `HOME`; verified and removed at session end. |
+| `/tmp/.X11-unix/.xsunaba-<random>/` | root:wheel | 0700 | Transient staging directory used to chown/chmod the socket safely; removed immediately. |
 | `/tmp/.X11-unix/X<NN>` | `_xsunaba_xephyr` + socket group | 0660 | Nested socket, tightened after Xephyr creates it. Group is `_xsunaba` in persistent mode, the ephemeral private group in amnesiac mode. |
 
-Your login user owns none of the authority files and cannot read
-them. The nested cookie is never placed in command-line arguments,
+An unprivileged login user owns none of the authority files and cannot
+read them. The nested cookie is never placed in command-line arguments,
 logs, the environment of unrelated processes, or predictable
 locations. Nothing security-sensitive is kept in `/tmp`.
 
@@ -424,9 +485,13 @@ locations. Nothing security-sensitive is kept in `/tmp`.
 helper controls the entire session:
 
 1. It validates every argument (parent display must be local, the
-   parent Xauthority must be owned by the invoking user, the
-   application path must be absolute, geometry values bounded, unveil
-   entries well-formed) and fails closed on any error.
+   parent Xauthority must be owned by and readable to the invoking
+   user and not group/world writable or world readable, the application
+   path must be absolute, geometry values bounded, unveil entries
+   well-formed) and fails closed on any error. It also rejects gid 0
+   for the sandbox accounts and group, a login user sharing a sandbox
+   UID, and a login user in `_xsunaba`; it verifies that the persistent
+   application home is a directory owned by `_xsunaba_app`.
 2. It acquires `/var/run/xsunaba/display.lock` and allocates a free
    nested display atomically; callers can never join an existing
    session, supply a session directory, socket pathname, UID or
@@ -444,22 +509,34 @@ helper controls the entire session:
    `-no-host-grab` removes Xephyr's manual ctrl+shift keyboard/mouse
    host grab (see Input handling below).
 6. Once the nested socket exists, it verifies Xephyr created it, then
-   chowns it to `_xsunaba_xephyr` plus the application's socket group
-   and chmods it to 0660, so only the two sandbox accounts can
-   connect. `-noreset` prevents the server from recreating the socket
-   with loose permissions on a reset. (The X server otherwise creates
-   sockets with umask(0) and mode 0777.)
+   moves it into a root-owned staging directory inside
+   `/tmp/.X11-unix`, chowns it there to `_xsunaba_xephyr` plus the
+   application's socket group, chmods it to 0660, and moves it back.
+   The staging step avoids a path-based `chown`/`chmod` symlink race
+   with the Xephyr UID, which can replace the socket path. `-noreset`
+   prevents the server from recreating the socket with loose
+   permissions on a reset. (The X server otherwise creates sockets
+   with umask(0) and mode 0777.)
 7. It forks the application as `_xsunaba_app` (persistent mode) or as
    the freshly created `_xsunaba_<random>` account (amnesiac mode)
-   with a rebuilt environment, optionally applies your unveil entries
-   plus the exact nested socket (`w`), the client authority (`r`) and
-   the runtime directory (`rwxc`), locks unveil, and execs the
-   application.
-8. It waits for the application, stops Xephyr, removes the socket and
-   the session tree, and returns the application's exit status. In
-   amnesiac mode it additionally terminates remaining ephemeral-UID
-   processes, removes the verified ephemeral home, and deletes the
-   account and its private group.
+   with a rebuilt environment. When at least one unveil entry is
+   present, it applies your entries plus the exact nested socket
+   (`w`), the client authority (`r`) and the runtime directory
+   (`rwxc`), locks unveil, and execs the application. Those rules are
+   cleared by `execve`; they are not a runtime containment boundary.
+8. It waits for the application, stops Xephyr, removes the socket, and
+   returns the application's exit status. Persistent mode removes the
+   session tree. Amnesiac mode terminates remaining ephemeral-UID
+   processes, removes the verified ephemeral home, deletes the account
+   and private group, and removes the session directory last; on
+   failure it keeps the session directory for the next amnesiac
+   invocation to retry.
+
+The helper records the allocated display and Xephyr PID in the session
+directory. A later amnesiac reaper releases that display only after the
+recorded PID is gone; it never signals an unverified PID. The 0660
+socket and group ownership are defense in depth: an authorized client
+still needs the nested MIT-MAGIC-COOKIE-1 cookie.
 
 The frontend stays unpledged to execute doas. The supervisor pledges
 `stdio rpath cpath fattr proc getpw` after launching its children in
@@ -565,11 +642,25 @@ process and execs a program; it does not switch UIDs or start Xephyr.
   authorized on the parent display can interfere with its window.
 - `_xsunaba_app` processes from different sessions share a UID and
   can access each other's files; do not claim per-session isolation
-  for persistent mode. Amnesiac mode provides a fresh UID per session.
+  for persistent mode. Amnesiac mode provides a fresh account name per
+  session, but the OS may reuse a freed numeric UID after deletion.
 - A compromised application cannot read your `~/.Xauthority`
-  (mode 0600, private home) or the Xephyr authority files (mode 0600,
-  other UID), and cannot connect to the nested socket of other
-  sessions without their cookies.
+  (the helper rejects a group/world writable or world-readable parent
+  authority, and the sandbox home is private) or the Xephyr authority
+  files (mode 0600, other UID), and cannot connect to the nested
+  socket of other sessions without their cookies.
+- Optional unveil rules are cleared by `execve`; they do not restrict
+  the running application and are not part of the runtime isolation
+  boundary. The helper's root interface is small but is not a kernel
+  sandbox: correct account setup and the documented doas rule remain
+  part of the trusted configuration.
+- Persistent sessions have no stale-session reaper. If the helper is
+  killed, Xephyr and application processes may continue; clean them up
+  manually. The amnesiac reaper does not signal an unverified Xephyr
+  PID; it only releases a recorded display after that PID is gone.
+- The helper does not inspect executable bits beyond requiring an
+  absolute application path. The application can execute any
+  setuid/setgid binary its UID is permitted to execute.
 - On OpenBSD, ptrace/process inspection is limited to same-UID
   processes (and root), so the ephemeral UID cannot inspect your
   processes; POSIX/SysV IPC and other globally accessible resources
@@ -601,19 +692,23 @@ $ Xsunaba --amnesiac xterm
 # 1. From another terminal: grep _xsunaba_ /etc/passwd
 #    Expected: exactly one new _xsunaba_<hex> entry per session.
 # 2. Inside the sandbox: id; echo $HOME; ls -ld $HOME
-#    Expected: fresh UID; HOME=/var/xsunaba/home/_xsunaba_<hex>;
-#    mode 0700.
+#    Expected: a fresh account and UID for this session;
+#    HOME=/var/xsunaba/home/_xsunaba_<hex>; mode 0700.
 # 3. Create files and directories; stat them.
 #    Expected: 0600 files, 0700 directories (umask 077).
 # 4. From the login user: attempt to read the ephemeral home.
 #    Expected: permission denied.
 # 5. From inside: try xauth/xwd against the parent display.
 #    Expected: authentication failure.
-# 6. Exit the app. Expected: no process with the ephemeral UID
-#    (pgrep -U <uid>), account absent from /etc/passwd, group gone,
-#    home gone, /var/run/xsunaba session directory gone.
+# 6. Exit the app. Expected when teardown succeeds: no process with
+#    the ephemeral UID (pgrep -U <uid>), account absent from
+#    /etc/passwd, group gone, home gone, /var/run/xsunaba session
+#    directory gone. If a process survives or deletion fails, the
+#    session directory is intentionally retained for a retry.
 # 7. Kill the helper with -9 mid-session, then start a new amnesiac
-#    session: the stale account/home/session should be reaped.
+#    session: the stale account/home/session should be reaped. The
+#    recorded display is released only after the recorded Xephyr PID
+#    is gone.
 ```
 
 Mouse/popup menus (regression matrix):

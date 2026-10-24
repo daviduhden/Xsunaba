@@ -57,11 +57,11 @@ install-users:
 		groupadd ${APP_GROUP}
 	@id ${APP_USER} >/dev/null 2>&1 || \
 		useradd -c 'Xsunaba sandbox application' \
-		-d ${APP_HOME} -g ${APP_GROUP} -m \
+		-d ${APP_HOME} -g ${APP_GROUP} -m -p '*' \
 		-s ${APP_SHELL} ${APP_USER}
 	@id ${XEPHYR_USER} >/dev/null 2>&1 || \
 		useradd -c 'Xsunaba Xephyr server' \
-		-d /nonexistent -g =uid \
+		-d /nonexistent -g =uid -p '*' \
 		-s /sbin/nologin ${XEPHYR_USER}
 	@echo "${INFO} Accounts ${APP_USER}, ${XEPHYR_USER} and group"
 	@echo "${INFO} ${APP_GROUP} are ready (home: ${APP_HOME})"

@@ -212,6 +212,7 @@ sub launch {
     $parent_xauth =~ m{\A/}
       or die "Invalid XAUTHORITY '$parent_xauth' (not absolute)";
     -f $parent_xauth or die "Cannot read Xauthority '$parent_xauth'";
+    -r $parent_xauth or die "Cannot read Xauthority '$parent_xauth'";
 
     my $unveil;
     if ( exists $opts{unveil} && defined $opts{unveil} ) {
@@ -264,11 +265,19 @@ unless (caller) {
     @ARGV
       or Xsunaba::die_tool 'Usage: Xsunaba [--amnesiac] [command args...]';
 
-    exit Xsunaba::launch(
-        amnesiac => $amnesiac,
-        app      => $ARGV[0],
-        args     => [ @ARGV[ 1 .. $#ARGV ] ],
-    );
+    my $status = eval {
+        Xsunaba::launch(
+            amnesiac => $amnesiac,
+            app      => $ARGV[0],
+            args     => [ @ARGV[ 1 .. $#ARGV ] ],
+        );
+    };
+    if ( my $err = $@ ) {
+        $err =~ s/\s+\z//;
+        print {*STDERR} "[ERROR] $err\n";
+        exit 1;
+    }
+    exit $status;
 }
 
 1;
