@@ -1,4 +1,4 @@
-.Dd $Mdocdate: September 1 2026 $
+.Dd $Mdocdate: October 24 2026 $
 .Dt XSUNABA 1
 .Os
 .Sh NAME
@@ -7,7 +7,7 @@
 .Sh SYNOPSIS
 .Nm
 .Op Fl -amnesiac
-.Op Ar command Op Ar argument ...
+.Ar command Op Ar argument ...
 .Sh DESCRIPTION
 The
 .Nm
@@ -38,14 +38,15 @@ account, never as the application account.
 Each invocation generates a fresh 128-bit MIT-MAGIC-COOKIE-1 cookie,
 stored in separate mode-0600 authority files for the Xephyr server
 and the application.
-The invoking user cannot read them.
+An unprivileged invoking user cannot read them.
 .It
 The nested Unix socket
 .Pa /tmp/.X11-unix/X Ns Ao Ar NN Ac
 is tightened to mode 0660, owned by
 .Sy _xsunaba_xephyr
-and a group restricted to the application account, so only the two
-sandbox accounts can connect.
+and the application's socket group.
+The invoking user must not be a member of that group, and a client
+must still present the nested MIT-MAGIC-COOKIE-1 cookie.
 .It
 The application environment is rebuilt from scratch:
 .Ev DISPLAY
@@ -105,7 +106,7 @@ creates a brand-new Unix user for this invocation only:
 .It
 A fresh account
 .Sy _xsunaba_ Ns Ao Ar random Ac
-with a private primary group, no usable password,
+with a private primary group, a locked password,
 .Pa /sbin/nologin
 shell and a private home
 .Pq Pa /var/xsunaba/home/_xsunaba_ Ns Ao Ar random Ac
@@ -121,16 +122,23 @@ owns; the umask is a default, not an access-control policy.
 The application receives credentials only for the nested display; the
 nested socket is group-owned by the ephemeral private group.
 .It
-When the session ends (normal exit, Xephyr failure, startup failure,
+When teardown succeeds (normal exit, Xephyr failure, startup failure,
 SIGINT or SIGTERM), remaining processes under the ephemeral UID are
-terminated, the session directory is removed, the verified ephemeral
-home is removed, and the account and its private group are deleted.
-Nothing persists between invocations.
+terminated, the verified ephemeral home is removed, the account and
+its private group are deleted, and the session directory is removed
+last.
+If a process may still run, or home, account or group deletion fails,
+the helper keeps the session directory and leaves the account and/or
+group for a later retry.
+Files the application created outside its home are not part of this
+cleanup, and the numeric UID may be reused after deletion.
 .It
 Interrupted sessions are recovered conservatively by the next
 amnesiac invocation: only session directories holding the helper's
 liveness lock and naming the account in their own account file are
 considered, only once no process remains under that UID.
+The reaper releases a recorded nested display only after the recorded
+Xephyr PID is gone.
 Unrelated accounts are never touched.
 .El
 .Pp
@@ -173,7 +181,15 @@ The helper:
 .It
 validates every argument and fails closed;
 .It
-requires the parent Xauthority to be owned by the invoking user;
+requires the parent Xauthority to be a readable regular file owned by
+the invoking user, not group/world writable and not world readable;
+.It
+rejects gid 0 for the sandbox accounts and shared group, a login user
+that shares a sandbox UID, and a login user in
+.Sy _xsunaba ;
+.It
+verifies that the persistent application home is a directory owned by
+.Sy _xsunaba_app ;
 .It
 allocates the nested display under a lock and never joins an
 existing session;
@@ -193,9 +209,15 @@ and
 sequences, resets supplementary groups and checks that privileges
 cannot be regained;
 .It
-restricts the nested socket to 0660 owned by
+moves the nested socket into a root-owned staging directory inside
+.Pa /tmp/.X11-unix ,
+restricts it there to 0660 owned by
 .Sy _xsunaba_xephyr
-plus the application socket group once Xephyr has created it;
+plus the application socket group, and moves it back, so a path-based
+.Xr chown 2
+or
+.Xr chmod 2
+cannot be redirected through a symlink created by the Xephyr UID;
 .It
 runs Xephyr with
 .Fl noreset
@@ -213,7 +235,7 @@ to 077 before creating session data;
 .It
 in amnesiac mode creates the ephemeral account with
 .Xr useradd 8
-.Pq no password, nologin shell, private group
+.Pq locked password, nologin shell, private group
 and deletes it with
 .Xr userdel 8
 plus
@@ -223,7 +245,10 @@ after terminating every process under its UID;
 rebuilds the application environment and optionally applies
 .Xr unveil 2 ;
 .It
-cleans up the socket and the session directory on exit;
+cleans up the socket and, in persistent mode, the session directory on
+exit; in amnesiac mode it keeps the session directory until the home,
+account and private group are gone, so a failed deletion can be
+retried;
 .It
 keeps the frontend unpledged to execute doas, and pledges the supervisor
 with
@@ -267,13 +292,20 @@ set to a local display
 and
 .Ev HOME
 set.
-The application command is either a bare name, resolved through
-.Ev PATH ,
-or an absolute path; it must be executable by the invoking user.
+A bare application name is resolved through the absolute entries of
+.Ev PATH ;
+relative entries are ignored.
+A command containing a slash is passed unchanged and must be an
+absolute path that the sandbox account can execute.
+The frontend resolves and checks bare names as the invoking user; the
+helper does not re-check executability, so an absolute path the
+sandbox account cannot execute fails in the application child.
 The parent X authority is taken from
 .Ev XAUTHORITY
 or, if unset,
-.Pa $HOME/.Xauthority .
+.Pa $HOME/.Xauthority ;
+it must be a readable regular file owned by the invoking user, not
+group/world writable and not world readable.
 .Pp
 The application's environment is rebuilt and contains only
 .Ev PATH , HOME , USER , LOGNAME , SHELL , DISPLAY , XAUTHORITY ,
@@ -327,7 +359,7 @@ Read, write, and create new files.
 Read, write, execute, and create (full access).
 .El
 .Pp
-After the user entries,
+When at least one user entry is present,
 .Nm
 additionally unveils, before locking:
 .Pp
@@ -335,10 +367,12 @@ additionally unveils, before locking:
 .It Pa /tmp/.X11-unix/X Ns Ao Ar NN Ac
 with
 .Ql w
-.Pq connect to the exact nested socket ;
-the
+.Pq connect to the exact nested socket .
+The helper does not add the
 .Pa /tmp/.X11-unix
-directory itself is never exposed.
+directory itself; a user entry such as
+.Ql /tmp:rwc
+can still expose it during pre-exec.
 .It the application authority file
 with
 .Ql r .
@@ -346,6 +380,14 @@ with
 with
 .Ql rwxc .
 .El
+.Pp
+If
+.Ev XSUNABA_UNVEIL
+is unset or empty, no unveil call is made.
+These rules are cleared by
+.Xr execve 2 ;
+they restrict pre-exec setup and the exec path lookup, not the running
+application's filesystem view.
 .It Ev XSUNABA_DISPLAY
 Starting X display number for
 .Xr Xephyr 1 .
@@ -366,9 +408,27 @@ initial display height in pixels; the window is resizable afterwards.
 Default:
 .Ql 768 .
 .It Ev VERBOSE
-When set to a non-empty value, emits informational messages.
+When set to a true value (for example
+.Ql 1 ) ,
+emits informational messages.
+A value of
+.Ql 0
+or an empty value disables them.
 Authentication material never appears in the output.
+.It Ev XSUNABA_VERBOSE
+Alias for
+.Ev VERBOSE ,
+with the same true-value rules.
 .El
+.Pp
+The helper bounds its input: display
+.Ql 1..999 ,
+width and height
+.Ql 1..32767 ,
+at most 64 unveil entries, unveil paths at most 1024 bytes, at most
+256 application arguments including the command, each path or argument
+at most 4096 bytes, the parent Xauthority file at most 1 MiB, and
+individual authority fields at most 4096 bytes.
 .Pp
 A non-empty legacy
 .Ev XSUNABA_PLEDGE
@@ -409,8 +469,7 @@ Nested-display server cookie for Xephyr
 .It Pa .../app/
 Session directory of the application account (mode 0700).
 .It Pa .../app/client-auth
-Nested-display client cookie (mode 0600, owned by
-.Sy _xsunaba_app ) .
+Nested-display client cookie (mode 0600, owned by the application UID).
 .It Pa .../app/run/
 Per-session
 .Ev XDG_RUNTIME_DIR
@@ -421,10 +480,19 @@ when it is free.
 .It Pa /var/run/xsunaba/ Ns Ar random Ns Pa /account
 Amnesiac session's account name (mode 0600, root), used to verify
 identity during reaping.
+.It Pa /var/run/xsunaba/ Ns Ar random Ns Pa /display
+Allocated nested display number (mode 0600, root), used to release a
+stale display after the recorded Xephyr PID is gone.
+.It Pa /var/run/xsunaba/ Ns Ar random Ns Pa /xephyr.pid
+Xephyr PID (mode 0600, root); a stale display is not released while
+this PID exists.
 .It Pa /var/xsunaba/home/_xsunaba_ Ns Ar random Ns Pa /
 Private amnesiac
 .Ev HOME
 (mode 0700, owned by the ephemeral account); removed at session end.
+.It Pa /tmp/.X11-unix/.xsunaba- Ns Ar random Ns Pa /
+Transient root-owned staging directory (mode 0700) used while the
+nested socket is chowned and chmodded; removed immediately.
 .It Pa /tmp/.X11-unix/X Ns Ao Ar NN Ac
 Nested X11 socket, tightened to mode 0660
 .Sy _xsunaba_xephyr
@@ -433,19 +501,20 @@ plus the application socket group.
 The nested X server executable.
 .El
 .Pp
-The invoking user owns none of the authority files and has no read
-permission on them.
+An unprivileged invoking user owns none of the authority files and has
+no read permission on them.
 Nothing security-sensitive is stored in
 .Pa /tmp .
 .Sh EXIT STATUS
-.Ex -std
-The exit status of the application is propagated (signal deaths are
-reported as 128 plus the signal number).
+.Nm
+exits 1 on a command-line validation or helper error.
+Otherwise the exit status of the application is propagated (signal
+deaths are reported as 128 plus the signal number).
 .Sh EXAMPLES
 Launch Firefox with filesystem restrictions:
 .Bd -literal -offset indent
-$ XSUNABA_UNVEIL="/usr/local/bin/firefox:rx,/tmp:rwc,/etc:r,/dev:r,\e
-  /home/_xsunaba_app/.mozilla:rwc" Xsunaba firefox
+$ XSUNABA_UNVEIL="/usr/local/bin/firefox:rx,/tmp:rwc,/etc:r,/dev:r,/home/_xsunaba_app/.mozilla:rwc" \e
+  Xsunaba firefox
 .Ed
 .Pp
 Run Tor Browser with a throwaway account:
@@ -488,29 +557,41 @@ transitions and start no Xephyr.
 .Sh DIAGNOSTICS
 Set
 .Ev VERBOSE
-to a non-empty value to see informational messages:
+to a true value (for example
+.Ql 1 )
+to see informational messages:
 .Bd -literal -offset indent
 [INFO] using display :32
 [INFO] session directory /var/run/xsunaba/<random>
 [INFO] Xephyr started (PID 12345)
-[INFO] launched 'firefox' (PID 12346)
+[INFO] socket /tmp/.X11-unix/X32 restricted to 660
+[INFO] launched '/usr/local/bin/firefox' (PID 12346)
 [INFO] stopped Xephyr (PID 12345)
 [INFO] cleanup complete
 .Ed
 .Pp
+Command-line validation errors are printed once with an
+.Ql [ERROR]
+prefix and exit 1.
 Errors (always printed) indicate fatal conditions such as a missing
 or non-local parent
 .Ev DISPLAY ,
-an unreadable or unowned parent X authority,
-missing sandbox accounts,
+an unreadable, unowned or too-permissive parent X authority,
+missing sandbox accounts or a rejected account relationship,
 an invalid application path,
 Xephyr failing to start,
 or a failed privilege drop.
-All such conditions fail closed and clean up the session.
+All such conditions fail closed.
+On a normal or failed startup the helper cleans up the session.
+In amnesiac mode, if a process survives or account deletion fails, the
+session directory is intentionally retained for the next reaper.
 .Sh SEE ALSO
 .Xr doas 1 ,
 .Xr perl 1 ,
 .Xr Xephyr 1 ,
+.Xr chmod 2 ,
+.Xr chown 2 ,
+.Xr execve 2 ,
 .Xr pledge 2 ,
 .Xr umask 2 ,
 .Xr unveil 2 ,
@@ -561,7 +642,29 @@ security boundary; see
 Persistent-mode invocations share the sandbox accounts and are not
 mutually isolated: an application in one session can read another
 session's application-side authority file and shared home directory.
-Amnesiac mode provides a fresh UID per session.
+Amnesiac mode creates a fresh account per session, but the OS may
+reuse a freed numeric UID after the account is deleted.
+.It
+Amnesiac teardown is conditional: if a process survives or home,
+account or group deletion fails, the session directory and account may
+remain for a later reap.
+Files written outside the ephemeral home are not removed.
+.It
+Optional unveil rules are cleared by
+.Xr execve 2
+and do not restrict the running application.
+They are not part of the runtime isolation boundary.
+.It
+Persistent sessions have no stale-session reaper.
+If the helper is killed, Xephyr and application processes may continue
+and must be cleaned up manually.
+The amnesiac reaper does not signal an unverified Xephyr PID; it only
+releases a recorded display after that PID is gone.
+.It
+The helper does not inspect executable bits beyond requiring an
+absolute application path.
+The application can execute any setuid/setgid binary its UID is
+permitted to execute.
 .It
 The umask 077 applied by the helper is a default only; applications
 can deliberately change permissions on files they own.

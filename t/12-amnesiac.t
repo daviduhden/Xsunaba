@@ -109,10 +109,13 @@ ok(
 is_deeply(
     [ Xsunaba::Helper::build_useradd_argv( $user, $home ) ],
     [
-        '/usr/sbin/useradd', '-d', $home,           '-g',
-        '=uid',              '-s', '/sbin/nologin', $user
+        '/usr/sbin/useradd', '-d', $home,
+        '-g',                '=uid',
+        '-p',                '*',
+        '-s',                '/sbin/nologin',
+        $user,
     ],
-    'useradd argv: no shell, private group, nologin, recorded home',
+    'useradd argv: locked password, private group, nologin, recorded home',
 );
 is_deeply(
     [ Xsunaba::Helper::build_userdel_argv($user) ],

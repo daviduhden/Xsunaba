@@ -119,6 +119,52 @@ sub _untaint {
     return $clean;
 }
 
+# Return true when $user is listed as a member of the group with $gid.
+# The primary group is checked by the caller; this covers supplementary
+# membership in /etc/group (the local OpenBSD group database).
+sub _user_in_group {
+    my ( $user, $gid ) = @_;
+    my $member = 0;
+    setgrent();
+    while ( my $grp = getgrent() ) {
+        next unless $grp->gid == $gid;
+        if ( grep { $_ eq $user } @{ $grp->members // [] } ) {
+            $member = 1;
+            last;
+        }
+    }
+    endgrent();
+    return $member;
+}
+
+# Wait for a child without reaping it if it is still alive. Returns
+# false when the PID is already reaped or is not a child, so cleanup
+# never signals a recycled PID.
+sub _child_alive {
+    my ($pid) = @_;
+    return 0 unless $pid;
+    my $reaped = waitpid( $pid, WNOHANG );
+    return 0 if $reaped == $pid || $reaped < 0;
+    return 1;
+}
+
+# Remove a tree and report whether it is actually gone. Used for
+# cleanup paths that must not die and must not silently leave state.
+sub _remove_tree {
+    my ($path) = @_;
+    my $ok = eval {
+        remove_tree( $path, { safe => 1 } );
+        1;
+    };
+    if ( !$ok || lstat $path ) {
+        my $why = $@ ? ": $@" : '';
+        $why =~ s/\s+\z//;
+        logw "cannot fully remove $path$why";
+        return 0;
+    }
+    return 1;
+}
+
 sub _parse_parent_display {
     my ($raw) = @_;
     $raw //= '';
@@ -311,8 +357,11 @@ sub ephemeral_home_for {
 
 sub build_useradd_argv {
     my ( $user, $home ) = @_;
-    return ( $USERADD_BIN, '-d', $home, '-g', '=uid', '-s', $EPHEMERAL_SHELL,
-        $user, );
+    # -p '*' sets an explicitly locked password. The account is meant to
+    # be reachable only through the helper's setuid transition, never by
+    # logging in; do not rely on the platform default.
+    return ( $USERADD_BIN, '-d', $home, '-g', '=uid', '-p', '*',
+        '-s', $EPHEMERAL_SHELL, $user, );
 }
 
 sub build_userdel_argv {
@@ -383,6 +432,21 @@ sub write_xauth_file {
           or die "write $path: $!";
     }
     close $fh or die "close $path: $!";
+    return 1;
+}
+
+# Create an authority file while its parent directory is still
+# root-owned, then hand it to the target account. The caller must
+# chown the directory only after this returns, so the target UID
+# cannot replace the path between creation and chown.
+sub _write_auth_file {
+    my ( $path, $records, $uid, $gid, $fatal ) = @_;
+    my $ok = eval {
+        write_xauth_file( $path, $records );
+        1;
+    };
+    $fatal->("$@") unless $ok;
+    chown( $uid, $gid, $path ) == 1 or $fatal->("chown $path: $!");
     return 1;
 }
 
@@ -607,7 +671,11 @@ sub run {
     die_tool 'xsunaba-helper must be invoked through doas as root'
       unless getuid() == 0 && geteuid() == 0;
 
-    my $opts = parse_args(@argv);
+    my $opts = eval { parse_args(@argv) };
+    if ( my $err = $@ ) {
+        $err =~ s/\s+\z//;
+        die_tool $err;
+    }
 
     # Private defaults for everything this session creates: the
     # application inherits this umask, so its own files and
@@ -645,10 +713,16 @@ sub run {
       or die_tool "$opts->{parent_xauth} is not a regular file";
     $st[4] == $pw->uid
       or die_tool "$opts->{parent_xauth} is not owned by '$user'";
+    ( $st[2] & oct(27) ) == 0
+      or die_tool "$opts->{parent_xauth} must not be group/world writable "
+      . 'or world readable';
 
     my $xephyr = getpwnam($XEPHYR_USER)
       or die_tool "user $XEPHYR_USER missing; run 'doas make install-users'";
     die_tool "$XEPHYR_USER must not be root" if $xephyr->uid == 0;
+    die_tool "$XEPHYR_USER must not use gid 0" if $xephyr->gid == 0;
+    die_tool "invoking user '$user' must not share a UID with $XEPHYR_USER"
+      if $pw->uid == $xephyr->uid;
 
     # Application identity: persistent dedicated account or, in
     # amnesiac mode, a fresh account created further below.
@@ -669,10 +743,24 @@ sub run {
         my $appgrp = getgrnam($APP_GROUP)
           or die_tool "group $APP_GROUP missing; run 'doas make install-users'";
         die_tool "$APP_USER must not be root" if $app->uid == 0;
+        die_tool "$APP_GROUP must not use gid 0" if $appgrp->gid == 0;
         die_tool "$XEPHYR_USER and $APP_USER share a UID"
           if $xephyr->uid == $app->uid;
+        die_tool "invoking user '$user' must not share a UID with $APP_USER"
+          if $pw->uid == $app->uid;
+        die_tool "invoking user '$user' must not be a member of $APP_GROUP"
+          if $pw->gid == $appgrp->gid
+          || _user_in_group( $user, $appgrp->gid );
         die_tool "primary group of $APP_USER must be $APP_GROUP"
           unless $app->gid == $appgrp->gid;
+        defined $app->dir && length $app->dir
+          or die_tool "$APP_USER has no home directory";
+        my @home_st = stat $app->dir
+          or die_tool "stat $app->dir: $!";
+        -d _
+          or die_tool "$app->dir is not a directory";
+        $home_st[4] == $app->uid
+          or die_tool "$app->dir is not owned by $APP_USER";
         $app_uid      = $app->uid;
         $app_gid      = $app->gid;
         $app_home     = $app->dir;
@@ -711,18 +799,20 @@ sub run {
     my $fatal = sub {
         my ($msg) = @_;
         _err $msg;
-        if ($xephyr_pid) {
+        if ( $xephyr_pid && _child_alive($xephyr_pid) ) {
             kill 'TERM', $xephyr_pid;
             Time::HiRes::sleep(0.1);
             kill 'KILL', $xephyr_pid;
             waitpid( $xephyr_pid, 0 );
         }
-        if ($app_pid) {
+        $xephyr_pid = undef;
+        if ( $app_pid && _child_alive($app_pid) ) {
             kill 'TERM', $app_pid;
             Time::HiRes::sleep(0.1);
             kill 'KILL', $app_pid;
             waitpid( $app_pid, 0 );
         }
+        $app_pid = undef;
         if ( lstat $socket && -S _ && ( stat _ )[4] == $xephyr->uid ) {
             unlink $socket or logw "cannot remove $socket: $!";
         }
@@ -730,7 +820,7 @@ sub run {
             _amnesiac_teardown( $am, $session );
         }
         else {
-            remove_tree( $session, { safe => 1 } );
+            _remove_tree($session);
         }
         exit 1;
     };
@@ -746,6 +836,14 @@ sub run {
     # signal race exists.
     local $SIG{USR1} = 'DEFAULT';
 
+    # Record the allocated display before starting Xephyr. The stale
+    # session reaper uses it to release a socket left behind by a
+    # helper that was killed before it could clean up.
+    sysopen( my $dfh, "$session/display", O_CREAT | O_EXCL | O_WRONLY, 0600 )
+      or $fatal->("open $session/display: $!");
+    print {$dfh} "$display\n" or $fatal->("write $session/display: $!");
+    close $dfh or $fatal->("close $session/display: $!");
+
     # Amnesiac mode: the session is reaper-visible from the moment the
     # active lock is held, so an interrupted creation is recovered by
     # the next invocation.
@@ -755,6 +853,8 @@ sub run {
         flock( $alock, LOCK_EX ) or $fatal->("flock: $!");
         $am->{lock_fh} = $alock;
         _amnesiac_create( $am, $session, $xephyr, $fatal );
+        $fatal->("amnesiac account shares the invoking user's UID")
+          if $am->{uid} == $pw->uid;
         $app_uid      = $am->{uid};
         $app_gid      = $am->{gid};
         $app_home     = $am->{home};
@@ -763,15 +863,13 @@ sub run {
         $socket_gid   = $am->{gid};
     }
 
+    # Create every directory while it is still root-owned. Authority
+    # files are written and chowned first; the directories are handed to
+    # the sandbox UIDs only afterwards, so a target UID cannot replace a
+    # path between creation and chown.
     mkdir $xephyr_dir, 0700 or $fatal->("mkdir $xephyr_dir: $!");
-    chown( $xephyr->uid, $xephyr->gid, $xephyr_dir ) == 1
-      or $fatal->("chown $xephyr_dir: $!");
-    mkdir $app_dir, 0700 or $fatal->("mkdir $app_dir: $!");
-    chown( $app_uid, $app_gid, $app_dir ) == 1
-      or $fatal->("chown $app_dir: $!");
-    mkdir $run_dir, 0700 or $fatal->("mkdir $run_dir: $!");
-    chown( $app_uid, $app_gid, $run_dir ) == 1
-      or $fatal->("chown $run_dir: $!");
+    mkdir $app_dir,    0700 or $fatal->("mkdir $app_dir: $!");
+    mkdir $run_dir,    0700 or $fatal->("mkdir $run_dir: $!");
 
     my $parent_auth = "$xephyr_dir/parent-auth";
     my $server_auth = "$xephyr_dir/server-auth";
@@ -788,9 +886,10 @@ sub run {
         @$matched
           or $fatal->( 'no MIT-MAGIC-COOKIE-1 entry for '
               . "$opts->{parent_display} in $opts->{parent_xauth}" );
-        write_xauth_file( $parent_auth, $matched );
-        chown( $xephyr->uid, $xephyr->gid, $parent_auth ) == 1
-          or $fatal->("chown $parent_auth: $!");
+        _write_auth_file(
+            $parent_auth, $matched,
+            $xephyr->uid, $xephyr->gid, $fatal
+        );
     }
 
     # Nested-display credentials: one fresh random cookie per session,
@@ -802,12 +901,17 @@ sub run {
     $fatal->("$@") if $@;
     my $records = xauth_records_for( $host, $display, $cookie );
 
-    write_xauth_file( $server_auth, $records );
-    chown( $xephyr->uid, $xephyr->gid, $server_auth ) == 1
-      or $fatal->("chown $server_auth: $!");
-    write_xauth_file( $client_auth, $records );
-    chown( $app_uid, $app_gid, $client_auth ) == 1
-      or $fatal->("chown $client_auth: $!");
+    _write_auth_file( $server_auth, $records,
+        $xephyr->uid, $xephyr->gid, $fatal );
+    _write_auth_file( $client_auth, $records,
+        $app_uid, $app_gid, $fatal );
+
+    chown( $app_uid, $app_gid, $run_dir ) == 1
+      or $fatal->("chown $run_dir: $!");
+    chown( $app_uid, $app_gid, $app_dir ) == 1
+      or $fatal->("chown $app_dir: $!");
+    chown( $xephyr->uid, $xephyr->gid, $xephyr_dir ) == 1
+      or $fatal->("chown $xephyr_dir: $!");
 
     logi "using display :$display";
     logi "session directory $session";
@@ -855,9 +959,19 @@ sub run {
     }
     logi "Xephyr started (PID $xephyr_pid)";
 
+    # Record the Xephyr PID so a later reaper can release a display
+    # only after that exact process is gone. A missing or unreadable
+    # file makes the reaper leave the display alone.
+    sysopen( my $xpidf, "$session/xephyr.pid",
+        O_CREAT | O_EXCL | O_WRONLY, 0600 )
+      or $fatal->("open $session/xephyr.pid: $!");
+    print {$xpidf} "$xephyr_pid\n"
+      or $fatal->("write $session/xephyr.pid: $!");
+    close $xpidf or $fatal->("close $session/xephyr.pid: $!");
+
     # --- Wait for the socket, then restrict it ---
-    _wait_for_socket( $socket, $xephyr_pid, $xephyr->uid, $socket_gid, $fatal,
-    );
+    _wait_for_socket( $socket, \$xephyr_pid, $xephyr->uid, $socket_gid,
+        $fatal, );
     close $lock or $fatal->("close $RUN_DIR/display.lock: $!");
     logi "socket $socket restricted to " . sprintf( '%o', $SOCKET_MODE );
 
@@ -937,6 +1051,8 @@ sub run {
         my $pid = waitpid( -1, 0 );
         if ( $pid == $app_pid ) {
             $app_status = $?;
+            # Already reaped; a late signal must not target this PID.
+            $app_pid = undef;
             last;
         }
         if ( $pid == $xephyr_pid ) {
@@ -954,15 +1070,17 @@ sub run {
     if ( $aborted && $app_pid ) {
         kill 'TERM', $app_pid;
         _stop_child( $app_pid, 'the application' );
+        $app_pid = undef;
     }
 
     _stop_xephyr( $xephyr_pid, $socket, $xephyr->uid );
+    $xephyr_pid = undef;
 
     if ( $opts->{amnesiac} ) {
         _amnesiac_teardown( $am, $session );
     }
     else {
-        remove_tree( $session, { safe => 1 } );
+        _remove_tree($session);
     }
     logi 'cleanup complete';
     return exit_status( defined $app_status ? $app_status : 1 );
@@ -1053,22 +1171,25 @@ sub _amnesiac_create {
         $user = eval { gen_account_name($token) };
         $fatal->("$@") if $@;
         $home = ephemeral_home_for($user);
+
+        # Record the candidate before useradd. If the helper dies after
+        # useradd succeeds but before the in-memory state is updated,
+        # the stale-session reaper can still find and delete the
+        # account from the session's own account file.
+        sysopen( my $af, "$session/account",
+            O_CREAT | O_EXCL | O_WRONLY, 0600 )
+          or $fatal->("open $session/account: $!");
+        print {$af} "$user\n" or $fatal->("write $session/account: $!");
+        close $af             or $fatal->("close $session/account: $!");
+
         my $rc = _run_cmd( build_useradd_argv( $user, $home ) );
         if ( $rc == 0 ) {
             $am->{user_created} = 1;
-            # Record the name immediately: if any later step fails,
-            # teardown must still be able to delete this account. Also
-            # write the session's own account file now, so a crash
-            # between account creation and home creation is still
-            # recoverable by the stale-session reaper.
-            $am->{user} = $user;
-            sysopen( my $af, "$session/account",
-                O_CREAT | O_EXCL | O_WRONLY, 0600 )
-              or $fatal->("open $session/account: $!");
-            print {$af} "$user\n" or $fatal->("write $session/account: $!");
-            close $af             or $fatal->("close $session/account: $!");
+            $am->{user}         = $user;
             last;
         }
+        unlink "$session/account"
+          or $fatal->("unlink $session/account: $!");
         $user = undef;
     }
     $fatal->('useradd failed for amnesiac account')
@@ -1105,13 +1226,9 @@ sub _amnesiac_create {
 #
 sub _amnesiac_teardown {
     my ( $am, $session ) = @_;
-
-    if ( $am->{lock_fh} ) {
-        my $lock_fh = delete $am->{lock_fh};
-        close $lock_fh or logw "close liveness lock: $!";
-    }
-
+    my $ok         = 1;
     my $procs_gone = 1;
+
     if ( $am->{uid} ) {
         _run_cmd( build_pkill_argv( 'TERM', $am->{uid} ) );
         Time::HiRes::sleep(0.1);
@@ -1125,38 +1242,95 @@ sub _amnesiac_teardown {
             logw "processes may still run as $am->{user}; "
               . 'account not removed to avoid UID reuse';
             $procs_gone = 0;
+            $ok         = 0;
         }
     }
 
-    remove_tree( $session, { safe => 1 } );
-
-    if ( $am->{home_created} ) {
-        if ( home_safe_to_delete( $am->{home}, $am->{user}, $am->{uid} ) ) {
-            remove_tree( $am->{home}, { safe => 1 } );
+    # Keep the session directory until the account and group are gone:
+    # it is the reaper's only record of what to delete. The home must
+    # go before userdel so a failed home removal can be retried while
+    # the passwd entry still exists.
+    if ( $procs_gone && $am->{home_created} ) {
+        my @hst = lstat $am->{home};
+        if ( !@hst ) {
+            # Already gone from a partial earlier attempt.
+        }
+        elsif ( home_safe_to_delete( $am->{home}, $am->{user}, $am->{uid} ) )
+        {
+            $ok = 0 unless _remove_tree( $am->{home} );
         }
         else {
             logw "refusing to remove home of $am->{user}";
+            $ok = 0;
         }
     }
 
-    return unless $procs_gone;
-
-    if ( $am->{user_created} ) {
-        _run_cmd( build_userdel_argv( $am->{user} ) ) == 0
-          or logw "userdel $am->{user} failed; stale account left";
-    }
-
-    if ( $am->{gid} && $am->{user} ) {
-        my $grp = getgrnam( $am->{user} );
-        if (   $grp
-            && $grp->gid == $am->{gid}
-            && !@{ $grp->members // [] } )
-        {
-            _run_cmd( build_groupdel_argv( $am->{user} ) ) == 0
-              or logw "groupdel $am->{user} failed";
+    if ( $procs_gone && $ok && $am->{user_created} ) {
+        if ( _run_cmd( build_userdel_argv( $am->{user} ) ) == 0 ) {
+            my $grp = getgrnam( $am->{user} );
+            if (   $grp
+                && $grp->gid == $am->{gid}
+                && !@{ $grp->members // [] } )
+            {
+                if ( _run_cmd( build_groupdel_argv( $am->{user} ) ) != 0 ) {
+                    logw "groupdel $am->{user} failed; session left"
+                      . ' for a retry';
+                    $ok = 0;
+                }
+            }
+            elsif ($grp) {
+                logw "group $am->{user} is not removable; session left"
+                  . ' for a retry';
+                $ok = 0;
+            }
+        }
+        else {
+            logw "userdel $am->{user} failed; session left for a retry";
+            $ok = 0;
         }
     }
-    return;
+
+    if ($ok) {
+        $ok = _remove_tree($session);
+    }
+    else {
+        logw "session $session left for a later reap";
+    }
+
+    # Release the liveness lock only after teardown is complete. A
+    # concurrent reaper must not see a free lock while this helper is
+    # still deleting the account.
+    if ( $am->{lock_fh} ) {
+        my $lock_fh = delete $am->{lock_fh};
+        close $lock_fh or logw "close liveness lock: $!";
+    }
+    return $ok;
+}
+
+# Delete the ephemeral account's private group when it is safe to do
+# so. Returns true when the group is gone (including when it never
+# existed). A mismatched gid or a group with members is left alone.
+sub _delete_ephemeral_group {
+    my ( $user, $gid ) = @_;
+    my $grp = getgrnam($user);
+    return 1 unless $grp;
+    if ( $grp->gid == 0 ) {
+        logw "group $user has gid 0; not removed";
+        return 0;
+    }
+    if ( defined $gid && $grp->gid != $gid ) {
+        logw "group $user has an unexpected gid; not removed";
+        return 0;
+    }
+    if ( @{ $grp->members // [] } ) {
+        logw "group $user still has members; not removed";
+        return 0;
+    }
+    if ( _run_cmd( build_groupdel_argv($user) ) != 0 ) {
+        logw "groupdel $user failed";
+        return 0;
+    }
+    return 1;
 }
 
 #
@@ -1181,6 +1355,10 @@ sub reap_stale_sessions {
       or die "open $RUN_DIR/reaper.lock: $!";
     flock( $glock, LOCK_EX ) or die "flock reaper: $!";
 
+    my $xephyr = getpwnam($XEPHYR_USER);
+    logw "user $XEPHYR_USER missing; cannot release stale displays"
+      unless $xephyr;
+
     opendir( my $dh, $RUN_DIR ) or die "opendir $RUN_DIR: $!";
     my @tokens = stale_session_tokens( readdir $dh );
     closedir $dh;
@@ -1191,7 +1369,10 @@ sub reap_stale_sessions {
         -d _       or next;
         next unless -e "$dir/active.lock";
         sysopen( my $lfh, "$dir/active.lock", O_RDWR ) or next;
-        flock( $lfh, LOCK_EX | LOCK_NB )               or next;   # live session
+        unless ( flock( $lfh, LOCK_EX | LOCK_NB ) ) {    # live session
+            close $lfh or logw "close $dir/active.lock: $!";
+            next;
+        }
 
         my $user;
         if ( open my $af, '<', "$dir/account" ) {
@@ -1207,8 +1388,29 @@ sub reap_stale_sessions {
                   if $name =~ /\A(\Q$EPHEMERAL_PREFIX\E[0-9a-f]{16})\z/;
             }
         }
-        my $pw     = defined $user ? getpwnam($user) : undef;
-        my $reaped = 1;
+        my $display;
+        if ( open my $df, '<', "$dir/display" ) {
+            local $/ = undef;
+            my $value = <$df>;
+            close $df or logw "close $dir/display: $!";
+            if ( defined $value && $value =~ /\A([1-9][0-9]{0,2})\s*\z/ ) {
+                $display = $1;
+            }
+        }
+
+        my $xephyr_pid;
+        if ( open my $pf, '<', "$dir/xephyr.pid" ) {
+            local $/ = undef;
+            my $value = <$pf>;
+            close $pf or logw "close $dir/xephyr.pid: $!";
+            if ( defined $value && $value =~ /\A([1-9][0-9]*)\s*\z/ ) {
+                $xephyr_pid = $1;
+            }
+        }
+
+        my $pw         = defined $user ? getpwnam($user) : undef;
+        my $reaped     = 1;
+        my $procs_gone = 1;
         if ($pw) {
             my ( $uid, $gid ) = ( $pw->uid, $pw->gid );
             _run_cmd( build_pkill_argv( 'TERM', $uid ) );
@@ -1220,22 +1422,31 @@ sub reap_stale_sessions {
             my $alive = _run_cmd( build_pkill_argv( '0', $uid ) );
             if ( $alive == 1 ) {
                 my $home = ephemeral_home_for($user);
-                if ( $pw->dir eq $home
-                    && home_safe_to_delete( $home, $user, $uid ) )
-                {
-                    remove_tree( $home, { safe => 1 } );
+                my @hst  = lstat $home;
+                my $home_ok = 0;
+                if ( $pw->dir ne $home ) {
+                    logw "unexpected home '$pw->dir' for $user";
                 }
-                if ( _run_cmd( build_userdel_argv($user) ) == 0 ) {
-                    my $grp = getgrnam($user);
-                    if (   $grp
-                        && $grp->gid == $gid
-                        && !@{ $grp->members // [] } )
-                    {
-                        _run_cmd( build_groupdel_argv($user) );
+                elsif ( !@hst ) {
+                    $home_ok = 1;    # already removed by a partial teardown
+                }
+                elsif ( home_safe_to_delete( $home, $user, $uid ) ) {
+                    $home_ok = _remove_tree($home);
+                }
+                else {
+                    logw "refusing to remove home of $user";
+                }
+                if ( $home_ok ) {
+                    if ( _run_cmd( build_userdel_argv($user) ) == 0 ) {
+                        $reaped = 0
+                          unless _delete_ephemeral_group( $user, $gid );
+                    }
+                    else {
+                        logw "userdel $user failed; session left for a retry";
+                        $reaped = 0;
                     }
                 }
                 else {
-                    logw "userdel $user failed; session left for a retry";
                     $reaped = 0;
                 }
             }
@@ -1243,15 +1454,37 @@ sub reap_stale_sessions {
                 # Keep the session directory (its active.lock is free
                 # again) so a later invocation can finish the cleanup
                 # once the remaining processes are gone.
-                $reaped = 0;
+                $procs_gone = 0;
+                $reaped     = 0;
                 logw "processes may still run as $user; session left"
                   . ' for a later reap';
             }
         }
+        elsif ( defined $user ) {
+            # The passwd entry is already gone; a private group may
+            # remain from a failed groupdel in the previous attempt.
+            $reaped = 0
+              unless _delete_ephemeral_group( $user, undef );
+        }
+
+        # A dead helper may leave Xephyr and its socket behind. Release
+        # the recorded display once no application process remains. If
+        # Xephyr is still alive, keep the session so a later reaper can
+        # retry after it exits.
+        if ( $procs_gone && defined $display && $xephyr ) {
+            my $display_ok =
+              _cleanup_stale_display( $display, $xephyr->uid, $xephyr_pid );
+            $reaped = 0 unless $display_ok;
+        }
+
         if ($reaped) {
-            remove_tree( $dir, { safe => 1 } );
-            logw 'reaped stale amnesiac session'
-              . ( defined $user ? " $user" : '' );
+            if ( _remove_tree($dir) ) {
+                logw 'reaped stale amnesiac session'
+                  . ( defined $user ? " $user" : '' );
+            }
+            else {
+                logw "could not remove stale session $dir";
+            }
         }
         close $lfh or logw "close $dir/active.lock: $!";
     }
@@ -1272,28 +1505,131 @@ sub _random_hex {
     return $hex;
 }
 
+# Release a display whose Xephyr is provably gone. The recorded PID is
+# required; if it is still alive (or has been reused by any process),
+# leave the lock and socket untouched. Removal order matters: unlink
+# the lock first while the socket still exists, so a concurrent helper
+# cannot allocate the display in between. A dead Xephyr cannot unlink
+# the replacements afterwards.
+sub _cleanup_stale_display {
+    my ( $display, $uid, $pid ) = @_;
+    return 1 unless defined $display;
+    my ($n) = $display =~ /\A([1-9][0-9]{0,2})\z/;
+    return 1 unless defined $n;
+
+    # Without a recorded PID the display is left alone; removing the
+    # session directory is still safe because no later retry could
+    # prove the server gone either.
+    if ( !defined $pid || $pid !~ /\A[1-9][0-9]*\z/ ) {
+        logw "no valid Xephyr PID for stale display :$n; not released";
+        return 1;
+    }
+
+    # The Xephyr may still be alive. Keep the session directory so a
+    # later invocation can retry after it exits.
+    return 0 if kill( 0, $pid );
+
+    my $ok   = 1;
+    my $lock = "/tmp/.X$n-lock";
+    if ( lstat $lock && -f _ && ( stat _ )[4] == $uid ) {
+        unlink $lock or do {
+            logw "cannot remove stale $lock: $!";
+            $ok = 0;
+        };
+    }
+    my $socket = socket_path($n);
+    if ( lstat $socket && -S _ && ( stat _ )[4] == $uid ) {
+        unlink $socket or do {
+            logw "cannot remove stale $socket: $!";
+            $ok = 0;
+        };
+    }
+    return $ok;
+}
+
+# Tighten the nested socket without a path-based chown/chmod race.
+# The socket is moved into a root-owned staging directory inside
+# .X11-unix (same filesystem), changed there, and moved back. A
+# malicious Xephyr can replace the path it owns, but can never make
+# root chown or chmod a symlink target.
+sub _restrict_socket {
+    my ( $socket, $uid, $gid, $fatal ) = @_;
+
+    my $stage;
+    for ( 1 .. 32 ) {
+        my $token = eval { _random_hex(16) };
+        $fatal->("$@") if $@;
+        my $candidate = "$SOCKET_DIR/.xsunaba-$token";
+        if ( mkdir $candidate, 0700 ) {
+            $stage = $candidate;
+            last;
+        }
+        $fatal->("mkdir $candidate: $!") unless $!{EEXIST};
+    }
+    $fatal->("cannot create a staging directory in $SOCKET_DIR")
+      unless $stage;
+
+    my $staged = "$stage/socket";
+    if ( !rename( $socket, $staged ) ) {
+        my $err = $!;
+        _remove_tree($stage);
+        $fatal->("rename $socket: $err");
+    }
+
+    my @st = lstat $staged;
+    if ( !@st
+        || ( $st[2] & S_IFMT ) != S_IFSOCK
+        || $st[4] != $uid )
+    {
+        _remove_tree($stage);
+        $fatal->("$socket changed while it was being restricted");
+    }
+
+    if ( chown( $uid, $gid, $staged ) != 1 ) {
+        my $err = $!;
+        _remove_tree($stage);
+        $fatal->("chown $socket: $err");
+    }
+    if ( chmod( $SOCKET_MODE, $staged ) != 1 ) {
+        my $err = $!;
+        _remove_tree($stage);
+        $fatal->("chmod $socket: $err");
+    }
+
+    if ( !rename( $staged, $socket ) ) {
+        my $err = $!;
+        _remove_tree($stage);
+        $fatal->("rename $socket: $err");
+    }
+    _remove_tree($stage);
+
+    my @final = lstat $socket;
+    $fatal->("failed to restrict $socket")
+      unless @final
+      && ( $final[2] & S_IFMT ) == S_IFSOCK
+      && $final[4] == $uid
+      && $final[5] == $gid
+      && ( $final[2] & oct(777) ) == $SOCKET_MODE;
+    return;
+}
+
 sub _wait_for_socket {
-    my ( $socket, $pid, $uid, $gid, $fatal ) = @_;
+    my ( $socket, $pid_ref, $uid, $gid, $fatal ) = @_;
     for ( 1 .. 300 ) {
-        my $reaped = waitpid( $pid, WNOHANG );
-        $fatal->("Xephyr exited before opening $socket")
-          if $reaped == $pid;
-        if ( lstat $socket ) {
-            -S _ or $fatal->("$socket exists but is not a socket");
-            my $owner = ( stat _ )[4];
+        my $pid = $$pid_ref;
+        if ($pid) {
+            my $reaped = waitpid( $pid, WNOHANG );
+            if ( $reaped == $pid ) {
+                $$pid_ref = undef;
+                $fatal->("Xephyr exited before opening $socket");
+            }
+        }
+        if ( my @sst = lstat $socket ) {
+            ( $sst[2] & S_IFMT ) == S_IFSOCK
+              or $fatal->("$socket exists but is not a socket");
             $fatal->("$socket is not owned by the Xephyr UID")
-              unless $owner == $uid;
-            chown( $uid, $gid, $socket ) == 1
-              or $fatal->("chown $socket: $!");
-            chmod( $SOCKET_MODE, $socket ) == 1
-              or $fatal->("chmod $socket: $!");
-            my @st = lstat $socket
-              or $fatal->("lstat $socket: $!");
-            $fatal->("failed to restrict $socket")
-              unless ( $st[2] & S_IFMT ) == S_IFSOCK
-              && $st[4] == $uid
-              && $st[5] == $gid
-              && ( $st[2] & oct(777) ) == $SOCKET_MODE;
+              unless $sst[4] == $uid;
+            _restrict_socket( $socket, $uid, $gid, $fatal );
             return;
         }
         $fatal->("lstat $socket: $!") unless $!{ENOENT};
@@ -1306,6 +1642,7 @@ sub _wait_for_socket {
 sub _stop_child {
     my ( $pid, $what ) = @_;
     return unless $pid;
+    return unless _child_alive($pid);
     kill 'TERM', $pid;
     for ( 1 .. 20 ) {
         my $reaped = waitpid( $pid, WNOHANG );
@@ -1330,7 +1667,13 @@ sub _stop_xephyr {
 }
 
 unless (caller) {
-    exit Xsunaba::Helper::run(@ARGV);
+    my $status = eval { Xsunaba::Helper::run(@ARGV) };
+    if ( my $err = $@ ) {
+        $err =~ s/\s+\z//;
+        print {*STDERR} "[ERROR] $err\n";
+        exit 1;
+    }
+    exit $status;
 }
 
 1;
