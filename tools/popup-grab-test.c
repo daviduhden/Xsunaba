@@ -36,6 +36,11 @@
 
 static int item_clicked[ITEM_COUNT];
 
+/*
+ * Draw the popup menu using the current per-item state.  The window keeps its
+ * contents between exposes; this function is called when the popup is opened
+ * and after an item is clicked so the state colors stay current.
+ */
 static void
 draw_popup(Display *dpy, Window win, GC gc)
 {
@@ -59,6 +64,10 @@ draw_popup(Display *dpy, Window win, GC gc)
 	}
 }
 
+/*
+ * Return true when every popup item has been clicked.  The driver treats this
+ * as the successful terminal condition.
+ */
 static int
 all_clicked(void)
 {
@@ -70,6 +79,13 @@ all_clicked(void)
 	return 1;
 }
 
+/*
+ * Interactive X11 regression driver.  It creates a normal parent window with a
+ * menu bar, opens an override-redirect popup on a left click, and grabs the
+ * pointer with owner_events so motion and button events are reported relative
+ * to the popup.  The test succeeds after every item is clicked and fails on a
+ * timeout, an X error, or Escape.
+ */
 int
 main(int argc, char **argv)
 {

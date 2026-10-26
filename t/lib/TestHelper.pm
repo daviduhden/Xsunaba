@@ -10,6 +10,10 @@ use Test::More;
 our @EXPORT_OK = qw(dies_ok lives_ok run_capture);
 
 # Run a command without a shell and capture stdout, stderr and status.
+# Run a command with list-form open3, so no shell parses the arguments, and
+# collect stdout, stderr and the raw wait status.  The caller decodes $? when it
+# cares about exit versus signal status.  The temporary handles are closed and
+# the child is reaped before returning.
 sub run_capture {
     my (@cmd)      = @_;
     my $err_fh     = gensym();
@@ -25,6 +29,9 @@ sub run_capture {
 
 ## no critic (Subroutines::ProhibitSubroutinePrototypes)
 # The prototypes are the documented Test::More-style call interface.
+# Test::More-compatible assertion that a block dies.  An optional regular
+# expression is matched against the error after the basic assertion is
+# recorded, so a mismatch produces a separate, diagnosable test result.
 sub dies_ok (&;@) {
     my ( $code, @rest ) = @_;
     my $re   = @rest ? shift @rest : undef;
@@ -37,6 +44,9 @@ sub dies_ok (&;@) {
 }
 
 ## no critic (Subroutines::ProhibitSubroutinePrototypes)
+# Test::More-compatible assertion that a block completes without dying.  The
+# optional regular expression is checked only when the block died; this mirrors
+# the helper's documented behavior and avoids asserting against an empty error.
 sub lives_ok (&;@) {
     my ( $code, @rest ) = @_;
     my $re   = @rest ? shift @rest : undef;

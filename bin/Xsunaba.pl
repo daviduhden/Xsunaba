@@ -24,22 +24,35 @@ our $MAX_DISPLAY = 999;
 
 my $UNVEIL_LOCKED = 0;
 
+# Informational logging.  Messages are enabled only when the caller sets
+# VERBOSE or the legacy XSUNABA_VERBOSE variable, and always go to stdout so
+# the caller can separate status from warnings and errors.
 sub logi {
     print {*STDOUT} "[INFO] @_\n"
       if $ENV{VERBOSE} || $ENV{XSUNABA_VERBOSE};
     return;
 }
 
+# Emit a warning on stderr without changing the control flow.  Warnings are
+# used for degraded but still safe behavior; fatal startup errors use
+# die_tool().
 sub logw {
     print {*STDERR} "[WARN] @_\n";
     return;
 }
 
+# Print a fatal command-line or startup error and exit with the conventional
+# failure status.  Validators elsewhere die instead, so tests and embedding
+# callers can catch the message.
 sub die_tool {
     print {*STDERR} "[ERROR] $_[0]\n";
     exit 1;
 }
 
+# Apply a pledge(2) promise set through the OpenBSD Perl binding.  The binding
+# is loaded lazily so the module can still be inspected or used on non-OpenBSD
+# hosts, where the call is a logged no-op.  This wrapper is for low-level use
+# only; the frontend itself must remain unpledged because it execs doas.
 sub pledge {
     my ($promises) = @_;
     $promises //= $PLEDGE_PROMISES;
@@ -50,6 +63,10 @@ sub pledge {
     return OpenBSD::Pledge::pledge(@promises);
 }
 
+# Restrict path visibility with unveil(2).  Both OpenBSD modules are loaded
+# before the view can be locked so a later low-level pledge call never needs to
+# resolve module files after the filesystem is restricted.  Once unveil_lock()
+# has run, further calls are refused instead of silently ignored.
 sub unveil {
     my ( $path, $perm ) = @_;
     $perm //= 'r';
@@ -67,6 +84,8 @@ sub unveil {
     return OpenBSD::Unveil::unveil( $path, $perm );
 }
 
+# Permanently lock the unveil(2) view.  The operation is idempotent and
+# returns true on non-OpenBSD hosts so callers can share the same setup path.
 sub unveil_lock {
     unless ( $^O eq 'openbsd' ) {
         logi 'unveil_lock: not on OpenBSD';
@@ -97,6 +116,11 @@ sub _reject_pledge {
     }
 }
 
+# In-process sandbox helper for callers that want to run an application after
+# applying unveil entries.  The entries are applied in order, the view is
+# optionally locked, and exec replaces the process.  The helper never uses a
+# shell and rejects the legacy XSUNABA_PLEDGE knob because the Perl binding
+# cannot express execpromises.
 sub sandbox {
     my %opts        = @_;
     my $sandbox_app = $opts{app} or die 'No application specified';
@@ -134,8 +158,10 @@ sub sandbox {
 
 #
 # Build the exact argv passed to the privileged helper through doas.
-# Exported for tests. The helper re-validates every value; nothing
-# here is trusted by it.
+# Optional values are omitted rather than sent as empty arguments, and the
+# application argv is placed after the "--" separator so options cannot be
+# confused with application arguments. Exported for tests; the helper
+# re-validates every value and trusts nothing here.
 #
 sub build_helper_argv {
     my (%o) = @_;
@@ -155,6 +181,8 @@ sub build_helper_argv {
     return @argv;
 }
 
+# Validate a positive decimal dimension.  A leading zero or sign is rejected so
+# the helper receives a canonical value in the documented range.
 sub _valid_number {
     my ( $what, $value, $max ) = @_;
     $value =~ /\A[1-9][0-9]*\z/ or die "Invalid $what '$value'";
@@ -182,6 +210,11 @@ sub resolve_app {
     return;
 }
 
+# High-level launch path used by the command-line wrapper.  It validates the
+# application, nested display, geometry and parent Xauthority, then execs doas
+# with the helper argv.  No shell is involved.  The frontend deliberately stays
+# unpledged: doas performs the privilege transition, and adding an exec promise
+# would not restrict the helper.
 sub launch {
     my %opts = @_;
 
@@ -253,6 +286,9 @@ sub launch {
     die "exec $DOAS_BIN: $!";
 }
 
+# Script entry point.  The module is also loadable by tests, so this block runs
+# only when the file is executed directly.  The first argument selects amnesiac
+# mode; the remaining argv is the application and its arguments.
 unless (caller) {
     $ENV{XSUNABA_VERBOSE} ||= $ENV{VERBOSE} // '';
 

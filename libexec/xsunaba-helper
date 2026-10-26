@@ -91,6 +91,9 @@ our @PASSTHROUGH_ENV = qw(TERM TZ LANG LC_ALL LC_CTYPE LC_MESSAGES);
 
 my %VALID_SIGNAL = map { $_ => 1 } qw(TERM KILL 0);
 
+# Verbose diagnostics and non-fatal warnings.  The helper writes informational
+# messages to stdout and warnings to stderr so callers can separate the normal
+# session transcript from conditions that may require attention.
 sub logi {
     print {*STDOUT} "[INFO] @_\n" if $VERBOSE;
     return;
@@ -111,6 +114,11 @@ sub die_tool {
     exit 1;
 }
 
+# Return a taint-clean copy of a value that came from the caller or readdir(2).
+# Taint mode rejects these strings when they are used as paths or exec
+# arguments, so the helper explicitly revalidates the full string and records
+# the capture.  The NUL check is important because Perl strings can contain
+# bytes that underlying C interfaces would treat as terminators.
 sub _untaint {
     my ( $value, $what ) = @_;
     defined $value or die "missing $what";
@@ -165,6 +173,9 @@ sub _remove_tree {
     return 1;
 }
 
+# Validate the parent display syntax accepted by the helper.  Only local
+# displays with an optional screen number are accepted; remote display forms
+# would require network authentication the helper does not implement.
 sub _parse_parent_display {
     my ($raw) = @_;
     $raw //= '';
@@ -173,6 +184,9 @@ sub _parse_parent_display {
     return $display;
 }
 
+# Validate the parent Xauthority path.  The path must be absolute because the
+# helper later changes directory and reads it with root privileges; a relative
+# path would make that lookup depend on the caller's working directory.
 sub _parse_parent_xauth {
     my ($raw) = @_;
     my $path = _untaint( $raw, 'parent Xauthority path' );
@@ -182,6 +196,8 @@ sub _parse_parent_xauth {
     return $path;
 }
 
+# Parse and range-check the requested starting display.  The helper still
+# searches forward for a free number; this only validates the caller's hint.
 sub _parse_display {
     my ($raw) = @_;
     return 32 unless defined $raw;
@@ -192,6 +208,8 @@ sub _parse_display {
     return 0 + $number;
 }
 
+# Parse a positive window dimension.  The defaults match the documented
+# initial Xephyr geometry; zero and out-of-range values are rejected.
 sub _parse_dimension {
     my ( $what, $raw ) = @_;
     $raw //= $what eq 'width' ? 1024 : 768;
@@ -202,6 +220,9 @@ sub _parse_dimension {
     return $number;
 }
 
+# Parse the comma-separated unveil list.  Each entry is PATH:PERM; paths must
+# be absolute and permissions are restricted to the unveil letters the helper
+# understands.  The returned list is canonical and contains no empty entries.
 sub _parse_unveil {
     my ($raw) = @_;
     return [] unless defined $raw && length $raw;
@@ -219,6 +240,9 @@ sub _parse_unveil {
     return \@clean;
 }
 
+# Validate the application path and its arguments.  The application must be an
+# absolute path so the final exec cannot depend on PATH; each argument is
+# untainted and bounded, but is otherwise passed through unchanged.
 sub _parse_app {
     my (@argv) = @_;
     die "no application specified\n" unless @argv;
@@ -295,16 +319,23 @@ sub parse_args {
     return \%o;
 }
 
+# Return the X11 socket path for a display number.
 sub socket_path {
     my ($n) = @_;
     return "$SOCKET_DIR/X$n";
 }
 
+# Test path existence without following a symlink.  ENOENT is a normal false
+# result; any other lstat(2) failure is fatal because the caller cannot then
+# distinguish a free display from an unreadable path.
 sub path_exists {
     my ($path) = @_;
     return lstat($path) ? 1 : ( $!{ENOENT} ? 0 : die "lstat $path: $!" );
 }
 
+# Find the first display number whose socket does not exist.  The caller
+# supplies the existence predicate so tests can exercise the search without
+# touching the real X11 socket directory.
 sub find_free_display {
     my ( $start, $exists ) = @_;
     for my $n ( $start .. $MAX_DISPLAY ) {
@@ -343,6 +374,9 @@ sub build_xephyr_argv {
 # Amnesiac-mode helpers. Account names are strictly generated:
 # never influenced by caller input beyond the random token.
 #
+# Derive the amnesiac account name from the random session token.  The token is
+# the only caller-independent input; the fixed prefix keeps the account
+# recognizable and within the OpenBSD login-name limit.
 sub gen_account_name {
     my ($token) = @_;
     $token =~ /\A([0-9a-f]{$EPHEMERAL_TOKEN_LEN})\z/
@@ -350,11 +384,17 @@ sub gen_account_name {
     return $EPHEMERAL_PREFIX . $1;
 }
 
+# Return the canonical home directory for an amnesiac account.  Keeping this
+# derivation in one place lets teardown verify that a path is exactly the one it
+# expects before removing a tree.
 sub ephemeral_home_for {
     my ($user) = @_;
     return "$EPHEMERAL_HOME_BASE/$user";
 }
 
+# Build the useradd(8) argv for an amnesiac account.  The account gets a
+# private primary group, a locked password, and nologin so it can only be used
+# through the helper's explicit setuid transition.
 sub build_useradd_argv {
     my ( $user, $home ) = @_;
     # -p '*' sets an explicitly locked password. The account is meant to
@@ -364,16 +404,22 @@ sub build_useradd_argv {
         '-s', $EPHEMERAL_SHELL, $user, );
 }
 
+# Build the userdel(8) argv.  The caller removes the home directory first so a
+# failed home removal can be retried while the passwd entry still exists.
 sub build_userdel_argv {
     my ($user) = @_;
     return ( $USERDEL_BIN, $user );
 }
 
+# Build the groupdel(8) argv for the account's private group.
 sub build_groupdel_argv {
     my ($group) = @_;
     return ( $GROUPDEL_BIN, $group );
 }
 
+# Build a pkill(1) invocation bounded by the ephemeral UID.  Signal 0 is used
+# as an existence probe.  UID 0 and arbitrary signal names are rejected so this
+# helper cannot be turned into a general process-killing interface.
 sub build_pkill_argv {
     my ( $signal, $uid ) = @_;
     die "invalid signal\n"
@@ -403,6 +449,10 @@ sub home_safe_to_delete {
 # passed on command lines; only through mode-0600 files owned by the
 # intended reader.
 #
+# Serialize one Xauthority record in the on-disk X11 format: a 16-bit family
+# followed by four 16-bit length-prefixed fields.  No NUL terminators are
+# written; the format is binary length-delimited.  The size limits keep the
+# pack template and the reader's bounds consistent.
 sub xauth_record_bytes {
     my ($r) = @_;
     die "authority record too long\n"
@@ -422,6 +472,9 @@ sub xauth_record_bytes {
     );
 }
 
+# Create a new mode-0600 authority file with O_EXCL and write every record.
+# The caller must ensure the parent directory is not writable by the target
+# UID until the file has been chowned.
 sub write_xauth_file {
     my ( $path, $records ) = @_;
     sysopen( my $fh, $path, O_CREAT | O_EXCL | O_WRONLY, 0600 )
@@ -450,6 +503,9 @@ sub _write_auth_file {
     return 1;
 }
 
+# Parse a complete Xauthority database from memory.  Every record is bounds-
+# checked before its fields are stored; truncated input, oversized fields and
+# trailing partial records are rejected rather than interpreted.
 sub parse_xauth_bytes {
     my ($data) = @_;
     my @records;
@@ -475,6 +531,9 @@ sub parse_xauth_bytes {
     return \@records;
 }
 
+# Read an Xauthority file with a hard size bound, then parse it.  The bound
+# prevents a malicious or damaged file from exhausting helper memory before the
+# record parser can reject it.
 sub read_xauth_file {
     my ($path) = @_;
     sysopen( my $fh, $path, O_RDONLY )
@@ -493,6 +552,9 @@ sub read_xauth_file {
     return parse_xauth_bytes($data);
 }
 
+# Extract the numeric display component from a local display string.  The
+# screen suffix, when present, is deliberately ignored because Xauthority
+# records are keyed by display number, not screen number.
 sub parent_display_number {
     my ($display) = @_;
     my ($n)       = $display =~ /\A:([0-9]+)(?:\.[0-9]+)?\z/
@@ -500,6 +562,10 @@ sub parent_display_number {
     return $n;
 }
 
+# Extract only the MIT-MAGIC-COOKIE-1 records for the requested parent display.
+# The complete authority database is never copied into the session; a missing
+# record is an error because Xephyr would otherwise fail with an opaque X11
+# authentication message.
 sub extract_parent_auth {
     my ( $records, $display ) = @_;
     my $number = parent_display_number($display);
@@ -513,6 +579,9 @@ sub extract_parent_auth {
     return \@matched;
 }
 
+# Build the two authority records used for the nested display: one keyed to the
+# local host name and one wildcard record for clients that connect through a
+# different local name.  Both carry the same freshly generated cookie.
 sub xauth_records_for {
     my ( $host, $number, $cookie ) = @_;
     my $data = pack( 'H*', $cookie );
@@ -534,6 +603,9 @@ sub xauth_records_for {
     ];
 }
 
+# Generate a 128-bit cookie and return its lowercase hexadecimal spelling.
+# An injected file handle lets tests supply deterministic entropy; production
+# callers use /dev/urandom and fail closed on a short read.
 sub gen_cookie {
     my ($fh) = @_;
     my $buf = '';
@@ -567,6 +639,10 @@ sub _passthrough {
     return \%copy;
 }
 
+# Construct the application environment from scratch.  Only the explicit
+# whitelist in @PASSTHROUGH_ENV is copied; session-specific paths, identity and
+# display variables come from validated arguments, never from the caller's
+# environment.
 sub build_app_env {
     my (%s) = @_;
     my $env = {
@@ -585,6 +661,9 @@ sub build_app_env {
     return $env;
 }
 
+# Construct the Xephyr environment.  It is more restrictive than the
+# application environment: only the minimal PATH, the session home, the parent
+# display and the Xephyr authority file are exposed.
 sub build_xephyr_env {
     my (%s) = @_;
     my $env = {
@@ -599,6 +678,10 @@ sub build_xephyr_env {
     return $env;
 }
 
+# Build the final unveil list for the application: caller-supplied entries
+# first, followed by the nested socket, the application authority file and its
+# private runtime directory.  The helper-controlled entries are always added in
+# the same order regardless of the caller's list.
 sub build_unveil_entries {
     my (%s) = @_;
     my @entries = @{ $s{user_entries} // [] };
@@ -608,6 +691,10 @@ sub build_unveil_entries {
     return \@entries;
 }
 
+# Create a random session directory under the root-owned run directory.  The
+# directory starts at 0700 and is widened to 0711 so the sandbox UIDs can
+# traverse it without listing its contents.  A bounded retry handles the
+# unlikely name collision.
 sub make_session_dir {
     for ( 1 .. 32 ) {
         my $name = _random_hex(16);
@@ -621,6 +708,8 @@ sub make_session_dir {
     die "cannot create a session directory under $RUN_DIR\n";
 }
 
+# Translate a wait(2) status into a shell-style exit code.  Signal termination
+# is reported as 128+signal, matching common command-line conventions.
 sub exit_status {
     my ($status) = @_;
     return 1                       if $status == -1;
@@ -1086,6 +1175,9 @@ sub run {
     return exit_status( defined $app_status ? $app_status : 1 );
 }
 
+# Create or validate the root-owned runtime directory.  The directory must be
+# a real directory, owned by root and not writable by group or others; otherwise
+# another account could replace session paths or locks.
 sub _ensure_run_dir {
     if ( mkdir $RUN_DIR, 0711 ) {
         chmod 0711, $RUN_DIR or die "chmod $RUN_DIR: $!";
@@ -1100,6 +1192,10 @@ sub _ensure_run_dir {
     return 1;
 }
 
+# Return the host name as an untainted string suitable for the authority
+# address field.  The value must match what Xlib computes on the client side,
+# so no case folding or truncation is applied; only NUL bytes and overlong names
+# are rejected.
 sub _hostname {
     my $host = hostname();
     # The address field of a FamilyLocal MIT-MAGIC-COOKIE-1 record must
@@ -1135,6 +1231,9 @@ sub _run_cmd {
     return exit_status($?);
 }
 
+# Create or validate the root-owned bases used for amnesiac homes.  Both
+# directories must be real directories owned by root and not writable by other
+# accounts; otherwise an ephemeral home could be replaced or pre-created.
 sub _ensure_ephemeral_bases {
     for my $dir ( '/var/xsunaba', $EPHEMERAL_HOME_BASE ) {
         if ( mkdir $dir, 0711 ) {
@@ -1492,6 +1591,9 @@ sub reap_stale_sessions {
     return;
 }
 
+# Read random bytes from /dev/urandom and return their lowercase hexadecimal
+# representation.  Short reads fail closed; callers use the result for session
+# names, staging directories and authentication cookies.
 sub _random_hex {
     my ($bytes) = @_;
     sysopen( my $fh, '/dev/urandom', O_RDONLY )
@@ -1613,6 +1715,9 @@ sub _restrict_socket {
     return;
 }
 
+# Poll until Xephyr creates its socket, verifying that the new path is a socket
+# owned by the Xephyr UID before tightening it.  The child is checked with
+# WNOHANG so an early exit is reported instead of waiting for the full timeout.
 sub _wait_for_socket {
     my ( $socket, $pid_ref, $uid, $gid, $fatal ) = @_;
     for ( 1 .. 300 ) {
@@ -1639,6 +1744,9 @@ sub _wait_for_socket {
     return;
 }
 
+# Stop one child with SIGTERM, wait briefly, then escalate to SIGKILL.  The
+# caller must not use the PID afterward; this function reaps it before
+# returning, and _child_alive() protects cleanup from signaling a recycled PID.
 sub _stop_child {
     my ( $pid, $what ) = @_;
     return unless $pid;
@@ -1657,6 +1765,9 @@ sub _stop_child {
     return;
 }
 
+# Stop Xephyr and remove its socket only when the socket is still a socket
+# owned by the Xephyr UID.  The ownership check prevents the helper from
+# deleting a path that a different process replaced after teardown began.
 sub _stop_xephyr {
     my ( $pid, $socket, $uid ) = @_;
     _stop_child( $pid, 'Xephyr' ) if $pid;
@@ -1666,6 +1777,8 @@ sub _stop_xephyr {
     return;
 }
 
+# Script entry point.  The module is loaded by tests with require(), so the
+# privileged run() path is entered only when this file is executed directly.
 unless (caller) {
     my $status = eval { Xsunaba::Helper::run(@ARGV) };
     if ( my $err = $@ ) {
