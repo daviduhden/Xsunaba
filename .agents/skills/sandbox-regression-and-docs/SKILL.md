@@ -1,10 +1,10 @@
 ---
 name: sandbox-regression-and-docs
 description: >-
-  Run and extend Xsunaba's portable regression suite, static checks, CI
-  expectations, and paired README/man documentation. Use when adding tests,
-  changing Makefile targets, updating security claims, or preparing a
-  change for review without privileged runtime testing.
+  Run and extend Xsunaba's portable regression suite, static checks, and
+  paired README/man documentation. Use when adding tests, changing Makefile
+  targets, updating security claims, or preparing a change for review
+  without privileged runtime testing.
 ---
 
 # Sandbox regression and documentation
@@ -13,7 +13,7 @@ description: >-
 
 Use this skill when a task touches:
 
-- `t/*.t`, `t/lib/TestHelper.pm`, `.github/workflows/ci.yml`.
+- `t/*.t`, `t/lib/TestHelper.pm`.
 - `Makefile` targets `test`, `tools`, `help`, `show-doas-rule`.
 - `README.md` or `man/Xsunaba.1`.
 - `t/90-static.t` needles or security claims that must stay evidence-based.
@@ -67,10 +67,10 @@ git diff --check
 git status --short
 ```
 
-CI runs `prove -I t/lib t/` on Linux and OpenBSD 8.0, plus the two syntax
-checks and `make -s show-doas-rule`. It does not run `make tools`, the
-optional X11 test, `make install`, `make install-users`, doas, Xephyr, or
-real account operations.
+There is no hosted CI. Run the validation commands above locally and
+report which ones ran. They do not run `make tools`, the optional X11
+test, `make install`, `make install-users`, doas, Xephyr, or real account
+operations.
 
 Optional, only with explicit approval:
 
@@ -108,6 +108,5 @@ not part of the default suite.
   `t/30-cookie.t`, `t/40-display.t`, `t/50-unveil.t`, `t/60-env.t`,
   `t/70-frontend.t`, `t/80-log.t`, `t/90-static.t`, `t/95-x11-optional.t`
 - `t/lib/TestHelper.pm`
-- `.github/workflows/ci.yml`
 - `Makefile`
 - `README.md`, `man/Xsunaba.1`
