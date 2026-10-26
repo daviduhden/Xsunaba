@@ -49,16 +49,15 @@ bin/Xsunaba.pl                 frontend, runs as the login user
 | `t/lib/TestHelper.pm` | `run_capture`, `dies_ok`, `lives_ok` |
 | `tools/popup-grab-test.c` | Optional X11 input regression tool |
 | `Makefile` | Install/accounts/doas-rule/test/tools targets |
-| `.github/workflows/ci.yml` | Linux + OpenBSD 8.0 checks |
 
 ## Commands that actually exist
 
 ```sh
 make test                         # prove -I t/lib -v t/
-prove -I t/lib t/                 # CI form
+prove -I t/lib t/                 # all tests, non-verbose
 prove -I t/lib -v t/20-xauth.t    # single test
-perl -T -c libexec/xsunaba-helper # CI syntax check (taint mode)
-perl -c bin/Xsunaba.pl            # CI syntax check
+perl -T -c libexec/xsunaba-helper # syntax check (taint mode)
+perl -c bin/Xsunaba.pl            # syntax check
 make -s show-doas-rule            # print, never edit, /etc/doas.conf
 make tools                        # build tools/popup-grab-test
 make help                         # list targets
@@ -139,7 +138,7 @@ Load only the skill that matches the task:
 - [nested-x11-authentication](.agents/skills/nested-x11-authentication/SKILL.md) — Xauthority records, cookies, display allocation, socket permissions.
 - [session-account-lifecycle](.agents/skills/session-account-lifecycle/SKILL.md) — persistent/amnesiac accounts, homes, teardown, stale-session reaping.
 - [perl-openbsd-security](.agents/skills/perl-openbsd-security/SKILL.md) — taint mode, pledge/unveil/doas, privileged Perl changes.
-- [sandbox-regression-and-docs](.agents/skills/sandbox-regression-and-docs/SKILL.md) — tests, static checks, CI, README/man synchronization.
+- [sandbox-regression-and-docs](.agents/skills/sandbox-regression-and-docs/SKILL.md) — tests, static checks, README/man synchronization.
 
 ## License
 

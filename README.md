@@ -113,8 +113,7 @@ The redesign removes that dependency on voluntary cooperation:
 
 - **OpenBSD** with Perl (both in base).
 - **Xephyr** from the `xserv` installation set (for example
-  `xserv80.tgz` on OpenBSD 8.0, the version exercised by CI); it is not
-  installed with `pkg_add`.
+  `xserv80.tgz` on OpenBSD 8.0); it is not installed with `pkg_add`.
 - **doas(1)** (in base) with the rule described below.
 - No `xauth` or `openssl` dependency: authority databases are parsed,
   built and written directly by the helper, and cookies come from
