@@ -8,12 +8,20 @@ use lib "$FindBin::Bin/lib";
 use TestHelper qw(run_capture);
 
 my ( $stdout, $stderr, $status ) = run_capture(
-    'perl', "$FindBin::Bin/../tools/check-agent-maintenance.pl", '--worktree'
+    'python3', "$FindBin::Bin/../scripts/validate-agent-knowledge.py",
+    '--scope', 'worktree'
 );
 is( $status, 0, 'agent maintenance validator passes for this change set' )
   or diag("stdout: $stdout\nstderr: $stderr");
-like( $stdout, qr/Structural checks passed/, 'validator reports structural checks' );
-like( $stdout, qr/semantic relevance still requires review/,
-    'validator explains semantic review limitation' );
+like(
+    $stdout,
+    qr/Agent Knowledge Validation/,
+    'validator reports its contract summary'
+);
+like(
+    $stdout,
+    qr/automation cannot prove semantic correctness/,
+    'validator explains semantic review limitation'
+);
 
 done_testing;

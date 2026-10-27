@@ -58,7 +58,7 @@ prove -I t/lib t/                 # all tests, non-verbose
 prove -I t/lib -v t/20-xauth.t    # single test
 perl -T -c libexec/xsunaba-helper # syntax check (taint mode)
 perl -c bin/Xsunaba.pl            # syntax check
-perl tools/check-agent-maintenance.pl --worktree # local knowledge sync check
+python3 scripts/validate-agent-knowledge.py --scope worktree # local knowledge sync check
 make -s show-doas-rule            # print, never edit, /etc/doas.conf
 make tools                        # build tools/popup-grab-test
 make help                         # list targets
@@ -163,7 +163,7 @@ This requirement applies to every change: code, tests, configuration, dependenci
 2. Map the changed paths and behavior to existing agent responsibilities and skill `When to use` scopes. Read each applicable instruction and its linked procedures/references. If no skill covers recurring specialist work, extend the closest skill or create one with valid Agent Skills frontmatter (`name` and `description`) and a clear scope; do not create duplicate coverage.
 3. After implementation, re-read the affected instructions. Update them when behavior, interfaces, security assumptions, commands, paths, tests, or reusable findings changed. Remove stale or contradictory guidance. Agent instructions must point to current skills; skill references and validation commands must resolve. Do not make cosmetic, empty, timestamp-only, or task-diary edits.
 4. Every change set must contain a substantive, relevant change to at least one `AGENTS.md`, specialized `*.agent.md`, or `SKILL.md`. If no new reusable knowledge arises, make a relevant clarification or correction to instructions; do not fabricate knowledge. The automated check rejects empty/whitespace-only maintenance and checks structure and local Markdown links, while a human review must judge semantic relevance.
-5. Validate instruction structure and references with `perl tools/check-agent-maintenance.pl --worktree` for local changes (or `perl tools/check-agent-maintenance.pl --base <base-sha> --head <head-sha>` for a PR range). Run the relevant project checks as well. GitHub Actions runs the range check on pull requests. The validator needs Perl and Git only; it does not prove semantic correctness.
+5. Validate instruction structure and references with `python3 scripts/validate-agent-knowledge.py --scope worktree` for local changes (or `python3 scripts/validate-agent-knowledge.py --scope range --base <base-sha> --head <head-sha>` for a PR range). Run the relevant project checks as well. GitHub Actions runs the range check on pull requests. The validator requires Python 3.11+ and Git; it does not prove semantic correctness.
 6. Include the synchronization outcome in the final report. The task is incomplete if relevant instructions were not inspected, a needed update was omitted, references/checks fail, or semantic relevance has not been reviewed. Correct failures and rerun validation; if genuinely impossible, state the blocker and report FAIL rather than claiming completion.
 
 ### Post-Change Definition of Done
@@ -184,3 +184,24 @@ Every final response must include **Agent & Skills Synchronization** and report 
 
 MIT. Copyright (c) 2013 Milosz Galazka, (c) 2020 Morgan Aldridge,
 (c) 2025-2026 David Uhden Collado. See `LICENSE`.
+
+### Shared Agent Knowledge Validation Contract
+
+Use `python3 scripts/validate-agent-knowledge.py --scope worktree` for local
+changes and `python3 -m unittest discover -s tests/agent_knowledge_validator -v`
+for its contract tests. The validator requires Python 3.11+ and Git, uses only
+the Python standard library, and publishes contract version `1.0.0`. All
+adopting repositories share the same CLI, AK001-AK006 identifiers, output
+schema, and exit codes (`0` pass, `1` policy failure, `2` execution/configuration
+error). For a pull request, pass both revisions with
+`--scope range --base BASE_REF --head HEAD_REF`; compare from their merge base.
+
+Read [Agent Knowledge Validation Contract](docs/agent-knowledge-validation.md)
+for the complete rules, JSON schema, optional repository configuration,
+warning semantics, and extension process. AK004 and AK006 can require human
+review; their warnings do not prove or disprove semantic correctness. Keep the
+canonical script and black-box unittest suite byte-identical across adopting
+repositories. Repository-specific requirements belong in the documented TOML
+configuration or a stable `AKX...` extension, never in a private fork of the
+shared rules. The GitHub PR workflow runs the same tests and range command;
+it does not edit files or require secrets.
