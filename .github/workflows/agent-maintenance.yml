@@ -20,4 +20,4 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 tools/check_agent_maintenance.py --base "$BASE_SHA" --head "$HEAD_SHA"
+        run: perl tools/check-agent-maintenance.pl --base "$BASE_SHA" --head "$HEAD_SHA"
