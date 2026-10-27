@@ -63,9 +63,14 @@ perl -T -c libexec/xsunaba-helper
 perl -c bin/Xsunaba.pl
 make -s show-doas-rule
 make -s help
+checkmake Makefile
 git diff --check
 git status --short
 ```
+
+Keep Makefile target bodies within checkmake's five-line default. Join shell
+commands with `&&` only when each later command should run after the previous
+one succeeds; preserve that short-circuit behavior when condensing recipes.
 
 GitHub Actions runs the agent-maintenance structural check on pull
 requests. Run the validation commands above locally and report which ones
