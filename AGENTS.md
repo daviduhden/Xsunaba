@@ -100,6 +100,8 @@ run it unless the task explicitly requires real X11 input testing.
   `man/Xsunaba.1`. `t/90-static.t` checks both for account names,
   the doas rule, `--amnesiac`, `-resizeable`, `-no-host-grab`, and the
   exact phrase "Crossing the Unix-user isolation boundary".
+- Keep Makefile target bodies within checkmake's five-line default. When
+  joining recipe commands, preserve their order and `&&` failure chaining.
 - There is no `.perlcriticrc`, release tag, changelog, or packaging
   manifest. Keep severity-5-style cleanliness; annotate justified
   exceptions with `## no critic (Policy::Name)` and a reason.
