@@ -113,3 +113,7 @@ expects the verified transition patterns, `close $lock`, and
 - `man/Xsunaba.1` (DESCRIPTION, PRIVILEGED HELPER, CAVEATS)
 - `README.md` (Architecture, Security considerations)
 - `t/70-frontend.t`, `t/90-static.t`
+
+## Maintenance & Continuous Learning
+
+When this skill is used for a repository change, review it after completing the implementation. Update it when process ownership, privilege transitions, cleanup, tools, paths, tests, or security assumptions change, and add reusable findings that improve future work. Correct guidance shown to be wrong, keep examples and validation commands current, and remove stale or contradictory details. Do not add one-run task notes. Also inspect the root and any nearer `AGENTS.md` plus related skills, and perform the repository's required synchronization check before reporting completion.

@@ -107,3 +107,7 @@ separate, explicit check.
 - `man/Xsunaba.1`: DESCRIPTION, ENVIRONMENT, FILES.
 - `t/11-xephyr-argv.t`, `t/20-xauth.t`, `t/30-cookie.t`, `t/40-display.t`,
   `t/50-unveil.t`, `t/80-log.t`, `t/90-static.t`.
+
+## Maintenance & Continuous Learning
+
+When this skill is used for a repository change, review it after completing the implementation. Update it when X11 authentication procedures, flags, tools, paths, tests, or security assumptions change, and add reusable findings that improve future work. Correct guidance shown to be wrong, keep examples and validation commands current, and remove stale or contradictory details. Do not add one-run task notes. Also inspect the root and any nearer `AGENTS.md` plus related skills, and perform the repository's required synchronization check before reporting completion.

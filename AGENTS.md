@@ -58,6 +58,7 @@ prove -I t/lib t/                 # all tests, non-verbose
 prove -I t/lib -v t/20-xauth.t    # single test
 perl -T -c libexec/xsunaba-helper # syntax check (taint mode)
 perl -c bin/Xsunaba.pl            # syntax check
+python3 tools/check_agent_maintenance.py --worktree # local knowledge sync check
 make -s show-doas-rule            # print, never edit, /etc/doas.conf
 make tools                        # build tools/popup-grab-test
 make help                         # list targets
@@ -139,6 +140,43 @@ Load only the skill that matches the task:
 - [session-account-lifecycle](.agents/skills/session-account-lifecycle/SKILL.md) — persistent/amnesiac accounts, homes, teardown, stale-session reaping.
 - [perl-openbsd-security](.agents/skills/perl-openbsd-security/SKILL.md) — taint mode, pledge/unveil/doas, privileged Perl changes.
 - [sandbox-regression-and-docs](.agents/skills/sandbox-regression-and-docs/SKILL.md) — tests, static checks, README/man synchronization.
+
+## Continuous Agent & Skills Maintenance
+
+Agent instructions and skills are living repository artifacts.
+
+Every repository modification MUST include an agent/skills synchronization step.
+
+Before completing any task, inspect the applicable AGENTS.md and SKILL.md files, update the affected instructions, and validate their consistency with the implementation.
+
+A code change without the corresponding agent knowledge maintenance is considered incomplete.
+
+Never claim completion when the synchronization step has been skipped or has failed.
+
+This requirement applies to every change: code, tests, configuration, dependencies, workflows, architecture, and documentation, including changes to these instructions themselves. At the end of the task, perform one complete review; repeat only when that review finds an error that is then corrected.
+
+### Required procedure
+
+1. Before editing, inspect `git status --short`, this file, all nested `AGENTS.md` files, `.github/agents/*.agent.md`, and skills under `.agents/skills/**/SKILL.md`, `.github/skills/**/SKILL.md`, and `.claude/skills/**/SKILL.md`. Also inspect tool-specific instruction files present in the repository (including `.github/copilot-instructions.md`, `.cursor/rules/**`, and `CLAUDE.md`). Preserve pre-existing work.
+2. Map the changed paths and behavior to existing agent responsibilities and skill `When to use` scopes. Read each applicable instruction and its linked procedures/references. If no skill covers recurring specialist work, extend the closest skill or create one with valid Agent Skills frontmatter (`name` and `description`) and a clear scope; do not create duplicate coverage.
+3. After implementation, re-read the affected instructions. Update them when behavior, interfaces, security assumptions, commands, paths, tests, or reusable findings changed. Remove stale or contradictory guidance. Agent instructions must point to current skills; skill references and validation commands must resolve. Do not make cosmetic, empty, timestamp-only, or task-diary edits.
+4. Every change set must contain a substantive, relevant change to at least one `AGENTS.md`, specialized `*.agent.md`, or `SKILL.md`. If no new reusable knowledge arises, make a relevant clarification or correction to instructions; do not fabricate knowledge. The automated check rejects empty/whitespace-only maintenance and checks structure and local Markdown links, while a human review must judge semantic relevance.
+5. Validate instruction structure and references with `python3 tools/check_agent_maintenance.py --worktree` for local changes (or `python3 tools/check_agent_maintenance.py --base <base-sha> --head <head-sha>` for a PR range). Run the relevant project checks as well. GitHub Actions runs the range check on pull requests. The validator needs Python 3 and Git only; it does not prove semantic correctness.
+6. Include the synchronization outcome in the final report. The task is incomplete if relevant instructions were not inspected, a needed update was omitted, references/checks fail, or semantic relevance has not been reviewed. Correct failures and rerun validation; if genuinely impossible, state the blocker and report FAIL rather than claiming completion.
+
+### Post-Change Definition of Done
+
+- [ ] Repository changes implemented.
+- [ ] Relevant agent instructions reviewed.
+- [ ] Relevant skills reviewed.
+- [ ] Affected AGENTS.md / SKILL.md files updated.
+- [ ] Obsolete knowledge removed.
+- [ ] New reusable knowledge incorporated.
+- [ ] Agent and skill references validated.
+- [ ] Automated maintenance checks passed.
+- [ ] Final synchronization status reported.
+
+Every final response must include **Agent & Skills Synchronization** and report agents reviewed, skills reviewed, instruction files updated, knowledge incorporated or corrected, validations actually executed, and status `PASS` or `FAIL`. Never claim a check passed unless it was run. There are currently no specialized agent definition files; maintain this inventory when adding or removing them.
 
 ## License
 
