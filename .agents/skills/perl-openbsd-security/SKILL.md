@@ -103,3 +103,7 @@ source-text check; it cannot prove a syscall is race-free.
 - `bin/Xsunaba.pl`: `pledge`, `unveil`, `launch`.
 - `t/00-compile.t`, `t/10-args.t`, `t/12-amnesiac.t`, `t/90-static.t`.
 - `perlsec(1)`, `pledge(2)`, `unveil(2)`, `doas(1)`, `doas.conf(5)`.
+
+## Maintenance & Continuous Learning
+
+When this skill is used for a repository change, review it after completing the implementation. Update it when taint handling, privilege transitions, pledge/unveil behavior, tools, paths, tests, or security assumptions change, and add reusable findings that improve future work. Correct guidance shown to be wrong, keep examples and validation commands current, and remove stale or contradictory details. Do not add one-run task notes. Also inspect the root and any nearer `AGENTS.md` plus related skills, and perform the repository's required synchronization check before reporting completion.

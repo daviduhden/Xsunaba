@@ -102,3 +102,7 @@ account. Never "validate" by creating or deleting users, and never run
   OpenBSD validation checklist.
 - `man/Xsunaba.1`: AMNESIAC MODE, FILES, CAVEATS.
 - `t/12-amnesiac.t`, `t/13-umask.t`, `t/40-display.t`, `t/90-static.t`.
+
+## Maintenance & Continuous Learning
+
+When this skill is used for a repository change, review it after completing the implementation. Update it when account/session lifecycle procedures, tools, paths, tests, or security assumptions change, and add reusable findings that improve future work. Correct guidance shown to be wrong, keep examples and validation commands current, and remove stale or contradictory details. Do not add one-run task notes. Also inspect the root and any nearer `AGENTS.md` plus related skills, and perform the repository's required synchronization check before reporting completion.

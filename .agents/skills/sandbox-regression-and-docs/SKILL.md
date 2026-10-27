@@ -67,10 +67,13 @@ git diff --check
 git status --short
 ```
 
-There is no hosted CI. Run the validation commands above locally and
-report which ones ran. They do not run `make tools`, the optional X11
-test, `make install`, `make install-users`, doas, Xephyr, or real account
-operations.
+GitHub Actions runs the agent-maintenance structural check on pull
+requests. Run the validation commands above locally and report which ones
+ran. The check verifies changed-path coverage, substantive instruction
+additions, frontmatter/headings, and local Markdown links; semantic
+relevance still requires review. These checks do not run `make tools`, the
+optional X11 test, `make install`, `make install-users`, doas, Xephyr, or
+real account operations.
 
 Optional, only with explicit approval:
 
@@ -110,3 +113,7 @@ not part of the default suite.
 - `t/lib/TestHelper.pm`
 - `Makefile`
 - `README.md`, `man/Xsunaba.1`
+
+## Maintenance & Continuous Learning
+
+When this skill is used for a repository change, review it after completing the implementation. Update it when tests, validation layers, CI, documentation workflows, tools, paths, or project assumptions change, and add reusable findings that improve future work. Correct guidance shown to be wrong, keep examples and validation commands current, and remove stale or contradictory details. Do not add one-run task notes. Also inspect the root and any nearer `AGENTS.md` plus related skills, and perform the repository's required synchronization check before reporting completion.
