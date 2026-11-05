@@ -8,7 +8,7 @@ use lib "$FindBin::Bin/lib";
 use TestHelper qw(run_capture);
 
 my ( $stdout, $stderr, $status ) = run_capture(
-    'python3', "$FindBin::Bin/../scripts/validate-agent-knowledge.py",
+    'perl', "$FindBin::Bin/../scripts/validate-agent-knowledge.pl",
     '--scope', 'worktree'
 );
 is( $status, 0, 'agent maintenance validator passes for this change set' )
