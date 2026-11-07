@@ -190,7 +190,7 @@ This requirement applies to every change: code, tests, configuration, dependenci
 2. Map the changed paths and behavior to existing agent responsibilities and skill `When to use` scopes. Read each applicable instruction and its linked procedures/references. If no skill covers recurring specialist work, extend the closest skill or create one with valid Agent Skills frontmatter (`name` and `description`) and a clear scope; do not create duplicate coverage.
 3. After implementation, re-read the affected instructions. Update them when behavior, interfaces, security assumptions, commands, paths, tests, or reusable findings changed. Remove stale or contradictory guidance. Agent instructions must point to current skills; skill references and validation commands must resolve. Do not make cosmetic, empty, timestamp-only, or task-diary edits.
 4. Every change set must contain a substantive, relevant change to at least one `AGENTS.md`, specialized `*.agent.md`, or `SKILL.md`. If no new reusable knowledge arises, make a relevant clarification or correction to instructions; do not fabricate knowledge. The automated check rejects empty/whitespace-only maintenance and checks structure and local Markdown links, while a human review must judge semantic relevance.
-5. Validate instruction structure and references with `perl scripts/validate-agent-knowledge.pl --scope worktree` for local changes (or `perl scripts/validate-agent-knowledge.pl --scope range --base <base-sha> --head <head-sha>` for a PR range). Run the relevant project checks as well. GitHub Actions runs the range check on pull requests. The validator requires Perl 5.14+ (JSON::PP core) and Git; it does not prove semantic correctness.
+5. Validate instruction structure and references with `perl scripts/validate-agent-knowledge.pl --scope worktree` for local changes (or `perl scripts/validate-agent-knowledge.pl --scope range --base <base-sha> --head <head-sha>` for committed comparisons). Run the relevant project checks as well. GitHub Actions runs the worktree check only on manual dispatch. The validator requires Perl 5.14+ (JSON::PP core) and Git; it does not prove semantic correctness.
 6. Include the synchronization outcome in the final report. The task is incomplete if relevant instructions were not inspected, a needed update was omitted, references/checks fail, or semantic relevance has not been reviewed. Correct failures and rerun validation; if genuinely impossible, state the blocker and report FAIL rather than claiming completion.
 
 ### Post-Change Definition of Done
@@ -220,7 +220,7 @@ for its contract tests. The validator requires Perl 5.14+ (JSON::PP core) and Gi
 core Perl modules, and publishes contract version `1.0.0`. All
 adopting repositories share the same CLI, AK001-AK006 identifiers, output
 schema, and exit codes (`0` pass, `1` policy failure, `2` execution/configuration
-error). For a pull request, pass both revisions with
+error). To compare committed revisions locally, pass both with
 `--scope range --base BASE_REF --head HEAD_REF`; compare from their merge base.
 
 Read [Agent Knowledge Validation Contract](docs/agent-knowledge-validation.md)
@@ -230,5 +230,6 @@ review; their warnings do not prove or disprove semantic correctness. Keep the
 canonical script and black-box Perl suite byte-identical across adopting
 repositories. Repository-specific requirements belong in the documented TOML
 configuration or a stable `AKX...` extension, never in a private fork of the
-shared rules. The GitHub PR workflow runs the same tests and range command;
-it does not edit files or require secrets.
+shared rules. All workflows are manual-only: start them from the Actions
+tab or with `gh workflow run`; the agent workflow runs the same tests and
+worktree validation and does not edit files or require secrets.
